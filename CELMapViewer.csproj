@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Run on a newer runtime when only that is installed (e.g. VS-provided .NET 10). -->
+    <RollForward>Major</RollForward>
+    <AssemblyName>MT_Zenith</AssemblyName>
+    <Product>MT_Zenith</Product>
+    <Description>Map viewer/editor with AI (MCP/ACP) tools for the CEL (Desolo Zantas) Celeste mod</Description>
+    <Version>1.0.0</Version>
+    <ApplicationIcon>MT_Zenith.ico</ApplicationIcon>
+    <DefaultItemExcludes>$(DefaultItemExcludes);dist/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+    <EmbeddedResource Include="MT_Zenith.ico" LogicalName="MT_Zenith.ico" />
+    <None Include="MT_Zenith.png" />
+  </ItemGroup>
+
+  <!-- Standalone release build (GitHub / GameBanana): see publish.ps1. -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile Condition="'$(SelfContained)' == 'true'">true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

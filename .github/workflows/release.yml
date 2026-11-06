@@ -1,0 +1,62 @@
+name: MT_Zenith release
+
+# Builds the standalone MT_Zenith map editor and publishes a GitHub release.
+#   git tag v1.0.0 && git push origin v1.0.0
+# Manual runs build the zips as a workflow artifact, and only publish a release when "release" is ticked.
+# Windows runner: the app is WinForms (net8.0-windows).
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.1); empty = <Version> from CELMapViewer.csproj'
+        required: false
+      release:
+        description: 'Also create a GitHub release (tag v<version>)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = '${{ github.event.inputs.version }}'
+          if ('${{ github.ref_type }}' -eq 'tag') { $v = '${{ github.ref_name }}' -replace '^v', '' }
+          if (-not $v) { $v = ([xml](Get-Content CELMapViewer.csproj -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1 }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Publish
+        shell: pwsh
+        run: ./publish.ps1 -Version '${{ steps.ver.outputs.version }}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MT_Zenith-${{ steps.ver.outputs.version }}
+          path: dist/*
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag' || github.event.inputs.release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          $tag = "v$v"
+          $dist = 'dist'
+          gh release create $tag "$dist/MT_Zenith-$v-win-x64.zip" "$dist/MT_Zenith-$v-win-x64-fxdependent.zip" "$dist/SHA256SUMS.txt" `
+            --title "MT_Zenith $v" --notes-file "$dist/release-notes.md" --target '${{ github.sha }}'
