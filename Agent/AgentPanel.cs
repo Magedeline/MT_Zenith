@@ -32,6 +32,13 @@ public sealed class AgentPanel : UserControl
     private readonly ComboBox _model = OptCombo(170), _effort = OptCombo(90), _mode = OptCombo(100);
     private readonly CheckBox _fast = new() { Text = "Fast", AutoSize = true, Margin = new Padding(6, 5, 3, 0) };
     private readonly CheckBox _thinking = new() { Text = "Thinking", AutoSize = true, Margin = new Padding(3, 5, 3, 0) };
+    private readonly ComboBox _perm = OptCombo(175);
+    private readonly CheckBox _strongest = new() { Text = "Strongest effort", Appearance = Appearance.Button, AutoSize = true, Margin = new Padding(8, 1, 3, 0) };
+    private int _autoContinues;
+    private const int MaxAutoContinues = 8;
+
+    /// <summary>Whether a permission request's tool title names one of the editor's MCP tools (set by the host).</summary>
+    public Func<string, bool>? IsMapTool;
     private readonly List<Control> _extraControls = new();
     private readonly ToolTip _tips = new();
     private readonly Font _bold, _italic;
@@ -126,6 +133,8 @@ public sealed class AgentPanel : UserControl
                "viewer's map tools (MCP), so it can inspect, render and edit the open map; you see each change live and can Ctrl+Z it.\n" +
                "Agents must be installed first, e.g. `npm i -g @github/copilot`, `npm i -g @google/gemini-cli`, `npm i -g opencode-ai` " +
                "(npx presets download on first use).\n" +
+               "Strongest effort picks the agent's most capable model and highest effort, auto-allows the map tools, adds a build-and-verify directive " +
+               "to every prompt and continues automatically when a turn limit stops the agent: use it with Design ▸ Build a complete level.\n" +
                "Attach images, audio or video (Attach…, drag & drop, or paste a screenshot with Ctrl+V): the agent sees images directly and gets " +
                "waveform/spectrogram figures, video contact sheets and statistics for audio/video.\n", Kind.Info);
     }
@@ -178,6 +187,7 @@ public sealed class AgentPanel : UserControl
             _connect.Text = "Disconnect";
             UpdateButtons();
             await ApplyPreferencesAsync();
+            if (_strongest.Checked) await ApplyStrongestAsync();
             if (DescribeOptions() is { Length: > 0 } od) Append(od + "\n", Kind.Info);
             _input.Focus();
         }
@@ -248,26 +258,117 @@ public sealed class AgentPanel : UserControl
     private static Label OptLabel(string text) =>
         new() { Text = text, AutoSize = true, Margin = new Padding(3, 6, 1, 0) };
 
-    /// <summary>"Design ?": fills the input with a difficulty-tier workflow (study collab maps, build, compare_to_tier).</summary>
+    /// <summary>"Design ▾": fills the input with a level-design workflow (whole level, rooms, PCG, review, polish) for a difficulty tier.</summary>
     private Button BuildDesignButton()
     {
         var menu = new ContextMenuStrip();
-        var design = new ToolStripMenuItem("Design rooms for");
+        var build = new ToolStripMenuItem("Build a complete level (strongest effort)");
+        var design = new ToolStripMenuItem("Design a few rooms for");
+        var pcg = new ToolStripMenuItem("Generate with PCG and refine for");
         var review = new ToolStripMenuItem("Review open map against");
         for (int t = 1; t <= 5; t++)
         {
             int tier = t;
             string name = ReferenceMaps.TierNames[tier];
+            build.DropDownItems.Add(name, null, (_, _) => { if (!_strongest.Checked) _strongest.Checked = true; UsePrompt(Prompts.BuildMap(tier, name, null, null, null, null)); });
             design.DropDownItems.Add(name, null, (_, _) => UsePrompt(Prompts.DesignLevel(tier, name, null, null)));
+            pcg.DropDownItems.Add(name, null, (_, _) => UsePrompt(Prompts.PcgLevel(tier, name, null, null)));
             review.DropDownItems.Add(name, null, (_, _) => UsePrompt(Prompts.ReviewDifficulty(tier, name)));
         }
+        menu.Items.Add(build);
         menu.Items.Add(design);
+        menu.Items.Add(pcg);
         menu.Items.Add(review);
-        var btn = new Button { Text = "Design ?", AutoSize = true, Margin = new Padding(8, 1, 3, 0) };
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Polish and finish the open map", null, (_, _) => UsePrompt(Prompts.PolishMap()));
+        var btn = new Button { Text = "Design ▾", AutoSize = true, Margin = new Padding(8, 1, 3, 0) };
         btn.Click += (_, _) => menu.Show(btn, new Point(0, btn.Height));
-        _tips.SetToolTip(btn, "Insert a level-design prompt for a difficulty tier (Beginner ? Grandmaster). The agent studies installed collab maps " +
-                              "(Strawberry Jam, Spring Collab, ?) with difficulty_profile / study_reference_map, builds rooms, then checks them with compare_to_tier.");
+        _tips.SetToolTip(btn, "Insert a level-design prompt for a difficulty tier (Beginner … Grandmaster): a whole verified level, a few rooms, a PCG draft to refine, " +
+                              "a difficulty review or a polish pass. The agent studies installed collab maps, builds with build_room/batch, verifies with analyze_room/analyze_map.");
         return btn;
+    }
+
+    // ---- strongest effort: best model, max effort, thinking on, fast off ----
+
+    private static readonly string[] EffortOrder = { "max", "xhigh", "ultra", "highest", "very high", "very_high", "veryhigh", "high", "medium" };
+
+    /// <summary>Capability ranking by model name: bigger/newer first, speed-tier models last.</summary>
+    internal static int RankModel(string value, string name)
+    {
+        string s = (value + " " + name).ToLowerInvariant();
+        int score = 10;
+        foreach (var (word, w) in new[]
+        {
+            ("mythos", 100), ("fable", 98), ("opus", 95), ("gpt-5", 90), ("o3", 85), ("gemini", 60), ("gpt-4", 70), ("o1", 78),
+            ("codex", 72), ("grok", 70), ("sonnet", 70), ("deepseek", 60), ("pro", 15), ("default", 40), ("recommended", 5), ("latest", 3),
+            ("ultra", 12), ("max", 8), ("thinking", 6), ("reasoning", 6), ("1m", 2)
+        })
+            if (s.Contains(word)) score += w;
+        foreach (string slow in new[] { "haiku", "flash", "mini", "nano", "lite", "fast", "small", "turbo", "instant" })
+            if (s.Contains(slow)) score -= 45;
+        var m = System.Text.RegularExpressions.Regex.Match(s, @"(\d+)(?:[.-](\d+))?");
+        if (m.Success && int.TryParse(m.Groups[1].Value, out int major) && major < 100)
+            score += Math.Min(30, major * 3) + (m.Groups[2].Success && int.TryParse(m.Groups[2].Value, out int minor) ? Math.Min(9, minor) : 0);
+        return score;
+    }
+
+    private static Item? PickEffort(IEnumerable<Item> items)
+    {
+        var list = items.ToList();
+        foreach (string want in EffortOrder)
+            if (list.FirstOrDefault(i => i.Value.Contains(want, StringComparison.OrdinalIgnoreCase) || i.Name.Contains(want, StringComparison.OrdinalIgnoreCase)) is { } hit)
+                return hit;
+        return null;
+    }
+
+    /// <summary>Switches the session to the most capable model and highest effort the agent offers, thinking on, fast off.</summary>
+    private async Task ApplyStrongestAsync()
+    {
+        if (_client == null || _session == null) return;
+        var changed = new List<string>();
+        var s = Classify();
+        if (s.Model is { } m && m.Values.Count > 0)
+        {
+            var best = m.Values.OrderByDescending(v => RankModel(v.Value, v.Name)).First();
+            if (best.Value != m.CurrentText) { _settings.AgentModel = best.Value; await SetOptionAsync(m, JsonValue.Create(best.Value)); changed.Add("model " + best.Name); }
+        }
+        s = Classify();
+        if (s.Effort is { } e && PickEffort(e.Values) is { } eff && eff.Value != e.CurrentText)
+        {
+            _settings.AgentEffort = eff.Value;
+            await SetOptionAsync(e, JsonValue.Create(eff.Value));
+            changed.Add("effort " + eff.Name);
+        }
+        s = Classify();
+        if (s.Fast is { } f && ToggleState(f, fast: true)) { await SetToggleAsync(f, false, fast: true); changed.Add("fast off"); }
+        s = Classify();
+        if (s.Thinking is { } t && !ToggleState(t, fast: false)) { await SetToggleAsync(t, true, fast: false); changed.Add("thinking on"); }
+        _settings.AgentFast = false;
+        _settings.AgentThinking = true;
+        _settings.Save();
+        Append(changed.Count > 0 ? "Strongest effort: " + string.Join(", ", changed) + ".\n" : "Strongest effort: the agent already runs its strongest options (or offers none to switch).\n", Kind.Info);
+    }
+
+    private static readonly (string Id, string Label)[] PermissionPolicies =
+    {
+        ("ask", "Permissions: ask"), ("map", "Permissions: auto-allow map tools"), ("all", "Permissions: auto-allow all")
+    };
+
+    /// <summary>The option to pick automatically for a permission request under the current policy, or null to ask.</summary>
+    private string? AutoPermission(JsonObject? p)
+    {
+        string policy = _settings.AgentPermissions;
+        if (policy == "ask" || p?["options"] is not JsonArray options || options.Count == 0) return null;
+        var call = p["toolCall"] as JsonObject;
+        string title = call?["title"]?.ToString() ?? "";
+        string raw = call?["rawInput"]?.ToJsonString() ?? "";
+        bool isMap = title.Contains(McpServer.ServerName, StringComparison.OrdinalIgnoreCase) || raw.Contains(McpServer.ServerName, StringComparison.OrdinalIgnoreCase)
+                     || IsMapTool?.Invoke(title) == true;
+        if (policy == "map" && !isMap) return null;
+        string? Pick(Func<JsonNode?, bool> f) => options.FirstOrDefault(f)?["optionId"]?.ToString();
+        return Pick(o => o?["kind"]?.ToString() == "allow_always")
+               ?? Pick(o => o?["kind"]?.ToString() == "allow_once")
+               ?? Pick(o => (o?["name"]?.ToString() ?? "").Contains("allow", StringComparison.OrdinalIgnoreCase) || (o?["name"]?.ToString() ?? "").Contains("yes", StringComparison.OrdinalIgnoreCase));
     }
 
     private void UsePrompt(string text)
@@ -287,7 +388,37 @@ public sealed class AgentPanel : UserControl
         _opts.Controls.Add(_mode);
         _opts.Controls.Add(_fast);
         _opts.Controls.Add(_thinking);
+        _opts.Controls.Add(_perm);
+        _opts.Controls.Add(_strongest);
         _opts.Controls.Add(BuildDesignButton());
+
+        foreach (var (_, label) in PermissionPolicies) _perm.Items.Add(label);
+        _perm.SelectedIndex = Math.Max(0, Array.FindIndex(PermissionPolicies, pp => pp.Id == _settings.AgentPermissions));
+        _perm.SelectedIndexChanged += (_, _) =>
+        {
+            if (_perm.SelectedIndex < 0) return;
+            _settings.AgentPermissions = PermissionPolicies[_perm.SelectedIndex].Id;
+            _settings.Save();
+        };
+        _tips.SetToolTip(_perm, "How to answer the agent's permission requests. 'Auto-allow map tools' approves the mt-zenith MCP tools (map edits are undoable) " +
+                                "and still asks for file writes and shell commands; 'auto-allow all' approves everything.");
+        _strongest.Checked = _settings.AgentMaxEffort;
+        _strongest.CheckedChanged += async (_, _) =>
+        {
+            _settings.AgentMaxEffort = _strongest.Checked;
+            if (_strongest.Checked && _settings.AgentPermissions == "ask")
+            {
+                _settings.AgentPermissions = "map";
+                _updating = true;
+                _perm.SelectedIndex = 1;
+                _updating = false;
+            }
+            _settings.Save();
+            if (_strongest.Checked && _client != null) await ApplyStrongestAsync();
+            else if (!_strongest.Checked) Append("Strongest effort off.\n", Kind.Info);
+        };
+        _tips.SetToolTip(_strongest, "Strongest effort: switch to the agent's most capable model and highest effort (thinking on, fast off), auto-allow the map tools, " +
+                                     "prepend a build-and-verify directive to every prompt and continue automatically when a turn/token limit stops the agent (up to 8 times).");
 
         foreach (var cb in new[] { _model, _effort, _mode })
         {
@@ -595,10 +726,10 @@ public sealed class AgentPanel : UserControl
         UpdateAttachments();
         _input.Clear();
         Append(text + "\n" + string.Concat(files.Select(f => "📎 " + Path.GetFileName(f) + "\n")), Kind.User);
-        var prompt = new JsonArray();
-        if (Context?.Invoke() is { Length: > 0 } ctx) prompt.Add(new JsonObject { ["type"] = "text", ["text"] = ctx });
+        var prompt = ContextBlocks();
         prompt.Add(new JsonObject { ["type"] = "text", ["text"] = text });
         _busy = true;
+        _autoContinues = 0;
         UpdateButtons();
         try
         {
@@ -613,6 +744,22 @@ public sealed class AgentPanel : UserControl
             }
             SetState("Working…");
             string stop = await _client.PromptAsync(_session, prompt);
+            // Strongest effort: a turn or token limit is not the end of the task; pick it up where it stopped.
+            while (_strongest.Checked && stop is "max_turn_requests" or "max_tokens" && _autoContinues < MaxAutoContinues && _client != null && _session != null)
+            {
+                _autoContinues++;
+                Append($"\nLimit reached ({stop}); continuing automatically ({_autoContinues}/{MaxAutoContinues}).\n", Kind.Info);
+                _last = Kind.None;
+                var cont = ContextBlocks();
+                cont.Add(new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = "Continue the task from exactly where you stopped. First call design_notes read (todo) and get_status so you know the current state; " +
+                               "do not redo finished work; finish the remaining plan, verify, and report."
+                });
+                SetState($"Working… (auto-continue {_autoContinues})");
+                stop = await _client.PromptAsync(_session, cont);
+            }
             SetState(stop switch
             {
                 "end_turn" => "Ready.",
@@ -634,6 +781,15 @@ public sealed class AgentPanel : UserControl
             _last = Kind.None;
             UpdateButtons();
         }
+    }
+
+    /// <summary>The editor-state context (and, in strongest mode, the autonomy directive) that opens every prompt.</summary>
+    private JsonArray ContextBlocks()
+    {
+        var blocks = new JsonArray();
+        if (Context?.Invoke() is { Length: > 0 } ctx) blocks.Add(new JsonObject { ["type"] = "text", ["text"] = ctx });
+        if (_strongest.Checked) blocks.Add(new JsonObject { ["type"] = "text", ["text"] = Prompts.StrongestDirective });
+        return blocks;
     }
 
     // ---- attachments ----
@@ -770,6 +926,12 @@ public sealed class AgentPanel : UserControl
         {
             case "session/request_permission":
             {
+                if (AutoPermission(p) is { } auto)
+                {
+                    string title = p?["toolCall"]?["title"]?.ToString() ?? "tool";
+                    Ui(() => Append($"✓ auto-allowed: {title}\n", Kind.Tool));
+                    return new JsonObject { ["outcome"] = new JsonObject { ["outcome"] = "selected", ["optionId"] = auto } };
+                }
                 var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 Ui(() => AskPermission(p, tcs));
                 string? option = await tcs.Task;

@@ -32,6 +32,12 @@ public sealed class AppSettings
     public bool? AgentFast { get; set; }
     public bool? AgentThinking { get; set; }
     public bool ShowThoughts { get; set; } = true;
+    /// <summary>How the agent panel answers ACP permission requests: ask | map (auto-allow MT_Zenith map tools) | all.</summary>
+    public string AgentPermissions { get; set; } = "ask";
+    /// <summary>Strongest-effort mode: max model/effort, autonomy directive in every prompt, auto-continue on turn limits.</summary>
+    public bool AgentMaxEffort { get; set; }
+    /// <summary>PCGHelper folder chosen with PCG ▸ Locate PCGHelper (its Loenn folder or the mod root).</summary>
+    public string? PcgHelperDir { get; set; }
 
     private static string FilePath => Path.Combine(AppInfo.DataDir, "settings.json");
 

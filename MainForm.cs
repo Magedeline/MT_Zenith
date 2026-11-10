@@ -876,7 +876,11 @@ public sealed partial class MainForm : Form
         if (dlg.ShowDialog(this) != DialogResult.OK) return _pcgRoot;
         foreach (string candidate in new[] { Path.Combine(dlg.SelectedPath, "Loenn"), dlg.SelectedPath, Path.GetDirectoryName(dlg.SelectedPath) ?? "" })
             if (File.Exists(Path.Combine(candidate, "library", "selecte", "level.lua")))
+            {
+                _settings.PcgHelperDir = candidate;
+                _settings.Save();
                 return _pcgRoot = candidate;
+            }
         Log("That folder does not contain Loenn/library/selecte/level.lua.");
         return _pcgRoot;
     }
@@ -894,7 +898,7 @@ public sealed partial class MainForm : Form
             Log("PCGHelper not found. Install it next to CEL (Mods/PCGHelper) or use PCG ▸ Locate PCGHelper…");
             return;
         }
-        using var form = new PcgForm(new PcgGenerator(root));
+        using var form = new PcgForm(new PcgGenerator(root), () => _map, () => (_canvas.FgTiler, _canvas.BgTiler));
         if (form.ShowDialog(this) != DialogResult.OK || form.Result is not { Rooms.Count: > 0 } result) return;
 
         PushUndo();

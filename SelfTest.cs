@@ -201,6 +201,86 @@ internal static class SelfTest
         return failed;
     }
 
+    /// <summary>The design tools: movement-model reachability, map connectivity, build_room/draw_tiles/connect_rooms/batch/design_notes through the tool layer.</summary>
+    private static int DesignTest()
+    {
+        int failed = 0;
+        void Check(string name, bool ok, string? detail = null)
+        {
+            Console.WriteLine($"{name}: {(ok ? "ok" : "FAILED" + (detail != null ? " " + detail : ""))}");
+            if (!ok) failed++;
+        }
+        try
+        {
+            var map = new MapBin { Root = new BinElement("Map") };
+            var host = new HeadlessHost();
+            host.Load(map);
+            var tools = new MapTools(host);
+            ToolResult Call(string tool, string json) => tools.Call(tool, System.Text.Json.Nodes.JsonNode.Parse(json) as System.Text.Json.Nodes.JsonObject);
+            string Text(ToolResult r) => string.Join("\n", r.Content.OfType<System.Text.Json.Nodes.JsonObject>().Where(c => c["type"]?.ToString() == "text").Select(c => c["text"]?.ToString()));
+
+            // room a: bordered screen with a floor and an exit on the right; spawn auto-placed on the floor
+            var ra = Call("build_room", """{"name":"a","x":0,"y":0,"width":320,"height":184,"fill":"border","ops":[{"op":"rect","x":1,"y":20,"w":38,"h":2}],"exits":[{"side":"right","from":17,"to":19}]}""");
+            Check("build_room (bordered, floor, exit, auto spawn)", !ra.IsError && Text(ra).Contains("\"reached\":true") && Text(ra).Contains("\"required_tech\":\"none\""), Text(ra));
+
+            // room b to the right: floor on both sides of an 18-cell spiked pit -> the right exit is unreachable even with advanced tech
+            var rb = Call("build_room", """{"name":"b","attach":{"room":"a","side":"right"},"fill":"border","ops":[{"op":"rect","x":1,"y":20,"w":10,"h":2},{"op":"rect","x":29,"y":20,"w":10,"h":2}],"exits":[{"side":"left","from":17,"to":19},{"side":"right","from":17,"to":19}],"spawn":{"x":20,"y":160},"entities":[{"name":"spikesUp","x":88,"y":176,"width":144}]}""");
+            string tb = Text(rb);
+            var roomB = MapModel.Levels(map).Children.Select(l => new Room(l)).First(r => r.Name == "b");
+            string advRoute = RoomAnalysis.Analyze(roomB, Tech.Advanced).ToJson().ToJsonString();
+            Check("analysis flags an unreachable exit", !rb.IsError && tb.Contains("\"min_tech\":\"unreachable\"") && tb.Contains("\"side\":\"left\",\"from\":17,\"to\":19,\"reached\":true"), "advanced: " + advRoute);
+
+            // a platform in the middle turns it into two 6-tile jumps: no dash needed
+            var dt = Call("draw_tiles", """{"room":"b","ops":[{"op":"platform","x":16,"y":20,"len":8}]}""");
+            var an = Call("analyze_room", """{"room":"b"}""");
+            Check("draw_tiles platform makes the exit reachable without a dash", !dt.IsError && Text(an).Contains("\"required_tech\":\"none\""), Text(an));
+
+            // widen the pit back to 9 cells on one side: a dash is needed now
+            Call("draw_tiles", """{"room":"b","ops":[{"op":"clear","x":11,"y":20,"w":9,"h":2}]}""");
+            var an2 = Call("analyze_room", """{"room":"b"}""");
+            Check("9-tile gap needs a dash", Text(an2).Contains("\"required_tech\":\"dash\""), Text(an2));
+
+            // climbing: a 7-tall wall with a ledge beyond is reachable by grab + climb
+            var rc = Call("build_room", """{"name":"c","x":0,"y":184,"width":320,"height":184,"fill":"border","ops":[{"op":"rect","x":1,"y":20,"w":38,"h":2},{"op":"rect","x":20,"y":13,"w":2,"h":7},{"op":"rect","x":22,"y":13,"w":17,"h":1}],"exits":[{"side":"right","from":10,"to":12}],"spawn":{"x":40,"y":160}}""");
+            Check("wall climb onto a ledge reaches the exit", !rc.IsError && Text(rc).Contains("\"required_tech\":\"none\"") && Text(rc).Contains("climb"), Text(rc));
+
+            // connect a (above) and c (below) with a carved vertical opening; the map graph then sees 2 connections and a traversable map
+            var cc = Call("connect_rooms", """{"room_a":"a","room_b":"c","width":4}""");
+            var am = Call("analyze_map", """{"detailed":true}""");
+            string tm = Text(am);
+            Check("connect_rooms + analyze_map", !cc.IsError && tm.Contains("\"connections\":2") && tm.Contains("\"connected_to_start\":3") && tm.Contains("\"start_room\":\"a\""), tm);
+
+            // batch: atomic rollback leaves the map as it was
+            string before = Dump(map.Root);
+            var bt = Call("batch", """{"steps":[{"tool":"draw_tiles","args":{"room":"a","ops":[{"op":"rect","x":5,"y":5,"w":3,"h":3}]}},{"tool":"no_such_tool","args":{}}]}""");
+            Check("batch atomic rollback", Text(bt).Contains("\"rolled_back\":true") && Dump(map.Root) == before, Text(bt));
+            var bt2 = Call("batch", """{"steps":[{"tool":"draw_tiles","args":{"room":"a","ops":[{"op":"rect","x":5,"y":5,"w":3,"h":3}]}},{"tool":"get_room","args":{"room":"a","include_tiles":false}}]}""");
+            Check("batch mixed edit + read", Text(bt2).Contains("\"completed\":2") && Dump(map.Root) != before, Text(bt2));
+
+            // duplicate + mirror flips spikes
+            Call("add_entity", """{"room":"a","name":"spikesLeft","x":8,"y":100,"attrs":{"height":16}}""");
+            var dup = Call("duplicate_room", """{"room":"a","name":"a_m","x":640,"y":0,"mirror":true}""");
+            var mirrored = MapModel.Levels(map).Children.Select(l => new Room(l)).First(r => r.Name == "a_m");
+            Check("duplicate_room mirror", !dup.IsError && mirrored.EntitiesEl.Children.Any(e => e.Name == "spikesRight") && mirrored.Grid(true)[mirrored.Cols - 2, 20] == '1', Text(dup));
+
+            // design notes (in memory while the map has no path)
+            Call("design_notes", """{"action":"write","section":"plan","text":"a -> b -> c"}""");
+            Call("design_notes", """{"action":"append","section":"todo","text":"spikes in b"}""");
+            var notes = Call("design_notes", """{"action":"read"}""");
+            Check("design_notes", Text(notes).Contains("a -> b -> c") && Text(notes).Contains("spikes in b") && tools.NotesSummary()?.Contains("[todo]") == true, Text(notes));
+
+            // validate_map includes connectivity
+            var v = Call("validate_map", "{}");
+            Check("validate_map runs with connectivity", !v.IsError && Text(v).Contains("rooms"), Text(v));
+
+            // overlay render
+            var ov = Call("analyze_room", """{"room":"b","render":true,"scale":1}""");
+            Check("analyze_room render", ov.Content.Any(c => c?["type"]?.ToString() == "image"));
+        }
+        catch (Exception ex) { failed++; Console.WriteLine("DESIGN ERROR: " + ex); }
+        return failed;
+    }
+
     public static int Run(string[] args)
     {
         string? modDir = GameLink.FindModDir();
@@ -229,6 +309,7 @@ internal static class SelfTest
         Console.WriteLine($"round-trip: {ok} identical, {failed} failed");
         failed += AssetTest(maps);
         failed += MediaTest();
+        failed += DesignTest();
 
         string? root = args.Length > 1 ? args[1] : PcgGenerator.FindLoennRoot(modDir);
         if (root == null) { Console.WriteLine("PCGHelper not found; skipping generation test"); return failed == 0 ? 0 : 1; }
@@ -260,6 +341,41 @@ internal static class SelfTest
             File.Delete(tmp);
             Console.WriteLine($"import into {Path.GetFileName(sample)}: {before} -> {after} rooms ({string.Join(", ", added.Select(a => a.Str("name")))})");
             if (after != before + res.Rooms.Count) failed++;
+
+            // pipeline: candidates, repair toward a tier, movement-model judgement
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var cand = PcgPipeline.Run(gen, new PcgPipelineOptions
+            {
+                Base = new PcgOptions { Seed = "celeste", NbRooms = 3 }, Candidates = 2, Repair = true, TargetTier = 2,
+                Allowed = PcgPipeline.ParseAllowed(new[] { "spikes", "spinners", "refills", "jump-throughs", "crumble blocks" })
+            }, _ => { });
+            bool pipeOk = cand.Result.Rooms.Count == 3 && cand.Report["candidates"] is { } && cand.Score > 0
+                          && cand.Result.Rooms.All(r => r.Entities.All(e => e.Name is "player" or "blackGem" || PcgPipeline.ParseAllowed(new[] { "spikes", "spinners", "refills", "jump-throughs", "crumble blocks" })!.Contains(e.Name)));
+            Console.WriteLine($"pcg pipeline: best of 2 = seed \"{cand.Result.Seed}\" score {cand.Score:0.0}, {cand.Fixes.Count} repairs, {cand.Report["rooms_fully_traversable"]} traversable ({sw.ElapsedMilliseconds} ms) " + (pipeOk ? "ok" : "FAILED"));
+            if (!pipeOk) failed++;
+            using (var preview = PcgPipeline.Preview(cand.Result, null, null, 800))
+            {
+                bool prevOk = preview.Width > 0 && preview.Height > 0;
+                Console.WriteLine($"pcg preview: {preview.Width}x{preview.Height} " + (prevOk ? "ok" : "FAILED"));
+                if (!prevOk) failed++;
+            }
+
+            // training: a model estimated from the generated rooms, saved, used, deleted
+            var corpusMap = new MapBin { Root = new BinElement("Map") };
+            MapModel.ImportPcg(corpusMap, res, "t_");
+            var corpus = PcgPipeline.Corpus(corpusMap).ToList();
+            var tr = gen.Train(corpus, "fg", _ => { });
+            const string modelName = "selftest_tmp_model";
+            PcgGenerator.DeleteModel(modelName);
+            var info = PcgGenerator.SaveModel(modelName, "fg", tr, "selftest");
+            bool trainOk = tr.Patterns > 10 && tr.RoomsKept == corpus.Count && PcgGenerator.ModelNames().Contains(modelName);
+            PcgResult? fromCustom = null;
+            try { fromCustom = gen.Generate(new PcgOptions { Seed = "custom", NbRooms = 2, Model = modelName }, _ => { }); }
+            catch (Exception ex) { Console.WriteLine("  custom model generation failed: " + (ex is MoonSharp.Interpreter.InterpreterException ie ? ie.DecoratedMessage : ex.Message)); }
+            PcgGenerator.DeleteModel(modelName);
+            trainOk &= fromCustom is { Rooms.Count: 2 } && !PcgGenerator.ModelNames().Contains(modelName);
+            Console.WriteLine($"pcg train: {tr.Patterns} patterns from {tr.RoomsKept}/{tr.RoomsTotal} rooms ({tr.Entities} entities), generated {fromCustom?.Rooms.Count ?? 0} rooms from it, saved as {info.Name} then deleted " + (trainOk ? "ok" : "FAILED"));
+            if (!trainOk) failed++;
         }
         catch (Exception ex)
         {

@@ -56,25 +56,36 @@ public sealed record ToolDef(string Name, string Description, JsonObject InputSc
 /// </summary>
 public sealed partial class MapTools
 {
-    // Relaxed escaping keeps quotes/apostrophes/non-ASCII readable, which saves model tokens.
-    internal static readonly JsonSerializerOptions JsonOut = new() { WriteIndented = false, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+    // Relaxed escaping keeps quotes/apostrophes/non-ASCII readable, which saves model tokens. The explicit resolver is needed
+    // because JsonNode.ToJsonString marks the options read-only on newer runtimes and throws when none is set.
+    internal static readonly JsonSerializerOptions JsonOut = new()
+    {
+        WriteIndented = false,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()
+    };
 
     public const string Instructions =
-        "MT_Zenith (CEL map viewer/editor): inspect and edit Celeste .bin maps of the CEL (Desolo Zantas) mod. " +
+        "MT_Zenith (CEL map viewer/editor): inspect, build and verify Celeste .bin maps of the CEL (Desolo Zantas) mod. " +
         "Coordinates are pixels; entity/trigger x,y are relative to their room's top-left, rooms are placed in world pixels. " +
-        "Tiles are 8x8: tile grids are rows of tileset chars ('0' = empty) and tile x,y are cell indices. " +
-        "Room names are shown without the 'lvl_' prefix. Edits stay in memory until save_map (which also writes a .bak); " +
-        "use undo to revert the last edit. Call validate_map before saving, and render_room to look at a room. " +
-        "Rooms come in size tiers normal/medium/large/xl/xxl (room_size_presets); resize_room grows or shrinks a room in any direction " +
-        "(size tier, exact size, scale or per-edge amounts) and can push neighbouring rooms out of the way. " +
-        "game_* tools talk to a running Celeste with Everest debug mode (localhost:32270). " +
-        "To design for a difficulty (beginner, intermediate, advanced, expert, grandmaster) call difficulty_profile, study a few example maps " +
+        "Tiles are 8x8: tile grids are rows of tileset chars ('0' = empty) and tile x,y are cell indices. A screen is 320x184 px (40x23 cells). " +
+        "Room names are shown without the 'lvl_' prefix. Edits stay in memory until save_map (which also writes a .bak); use undo to revert the last edit. " +
+        "BUILD LOOP for a complex map: design_notes (plan first, keep todo/log) -> build_room (a whole room in one call: placement by attach, size, fill, fg rows or draw ops, " +
+        "exits, entities, spawn) -> connect_rooms (carve matching openings between touching rooms) -> analyze_room (movement-model check: which exits/items the player " +
+        "reaches from the spawn, min tech per exit none/dash/advanced/unreachable, hazard pressure, routes, hints) -> fix with draw_tiles / entity tools -> analyze_map " +
+        "detailed=true (openings connected/blocked/void, rooms reachable and traversable from the start) -> validate_map -> compare_to_tier -> save_map. " +
+        "batch runs several tools as one undo step with rollback. render_room / analyze_room render=true show a room (and the reachability overlay). " +
+        "Rooms come in size tiers normal/medium/large/xl/xxl (room_size_presets); resize_room grows or shrinks a room in any direction and can push neighbours. " +
+        "PCG: pcg_generate (seleCte Markov sampler; candidates, repair, tier shaping, mechanics filter, per-room movement check, preview) -> pcg_import -> refine by hand; " +
+        "pcg_train learns a new model from the open map or from reference maps of a difficulty tier. " +
+        "Difficulty: tiers beginner, intermediate, advanced, expert, grandmaster. difficulty_profile gives densities/sizes/common entities; study a few example maps " +
         "with study_reference_map (installed collabs such as Strawberry Jam/Spring Collab), build original rooms, then check with compare_to_tier. " +
         "Reference maps belong to other creators: learn pacing, spacing and mechanic use from them, never reproduce their rooms. " +
-        "Media: list_media finds the mod's images/audio/video; view_image shows sprites, GIFs, folders or animation frame sequences with " +
-        "pixel statistics; compare_images diffs two images; analyze_audio returns loudness/spectrum/tempo stats, a waveform+spectrogram " +
-        "image and optionally the audio itself; analyze_video returns a frame contact sheet plus soundtrack analysis; game_screenshot " +
-        "captures the running game. Paths are absolute or relative to the mod folder (also tried under Graphics/Atlases/Gameplay, Graphics, Audio).";
+        "game_* tools talk to a running Celeste with Everest debug mode (localhost:32270): game_teleport + game_screenshot to look at a saved room in-game. " +
+        "Media: list_media finds the mod's images/audio/video; view_image shows sprites, GIFs, folders or animation frame sequences with pixel statistics; " +
+        "compare_images diffs two images; analyze_audio and analyze_video return figures and statistics (and optionally the audio itself). " +
+        "Paths are absolute or relative to the mod folder (also tried under Graphics/Atlases/Gameplay, Graphics, Audio). " +
+        "Prompts: build_map (strongest-effort whole-level workflow), design_level, pcg_level, fix_room, review_difficulty, polish_map.";
 
     private readonly IMapHost _host;
     private readonly List<ToolDef> _tools = new();
@@ -227,6 +238,8 @@ public sealed partial class MapTools
         Add("read_game_log", "Tail Celeste's log.txt (exceptions, Everest messages).", true,
             Props(("lines", P("integer", "Lines from the end (default 80).")), ("filter", P("string", "Only lines containing this text."))), None, ReadLog);
 
+        RegisterDesign();
+        RegisterPcg();
         RegisterReference();
         RegisterMedia();
     }
@@ -329,12 +342,20 @@ public sealed partial class MapTools
         throw new ToolException($"No entity or trigger with id {id} in room '{room.Name}'.");
     }
 
-    /// <summary>Runs an edit on the map thread with undo + refresh.</summary>
+    /// <summary>Runs an edit on the map thread with undo + refresh (inside a batch the batch owns the undo step).</summary>
     private ToolResult Edit(Func<(BinElement? Level, string Summary)> f) => _host.Invoke(() =>
     {
         MapOrThrow();
-        _host.BeginEdit();
-        var (level, summary) = f();
+        if (_batchDepth == 0) _host.BeginEdit();
+        BinElement? level;
+        string summary;
+        try { (level, summary) = f(); }
+        catch when (_batchDepth == 0 && _host.Undo())
+        {
+            // a failed edit must not leave half of its changes behind: restore the snapshot, then report the error
+            _host.EndEdit(null, "edit failed");
+            throw;
+        }
         _host.EndEdit(level, summary);
         _host.Log("[AI] " + summary);
         return ToolResult.Text(summary);
@@ -472,6 +493,11 @@ public sealed partial class MapTools
                     issues.Add($"Rooms {rooms[i].Name} and {rooms[j].Name} overlap.");
         foreach (var (n, c) in unknown.OrderByDescending(kv => kv.Value).Take(30))
             issues.Add($"Unknown type '{n}' ({c}x) — no installed Lönn plugin defines it.");
+        if (rooms.Count > 1)
+        {
+            var graph = MapGraph.Analyze(map, detailed: false);
+            issues.AddRange(graph.Issues.Where(i => !i.Contains("no player spawn")).Select(i => "Connectivity: " + i));
+        }
 
         var sb = new StringBuilder($"{rooms.Count} rooms, {ids.Count} entities/triggers: ");
         sb.Append(issues.Count == 0 ? "no problems found." : $"{issues.Count} issue(s):\n" + string.Join("\n", issues.Take(200)) + (issues.Count > 200 ? $"\n… and {issues.Count - 200} more." : ""));
@@ -551,7 +577,8 @@ public sealed partial class MapTools
     }
 
     /// <summary>Renders a room job plus labelled entity boxes to a PNG tool result.</summary>
-    internal static ToolResult RenderPng(RoomRenderJob job, List<(RectangleF Box, string Label, int Kind)> boxes, double? requestedScale, string title)
+    internal static ToolResult RenderPng(RoomRenderJob job, List<(RectangleF Box, string Label, int Kind)> boxes, double? requestedScale, string title,
+                                         Action<Graphics, float>? overlay = null)
     {
         using var img = job.Render();
         float scale = requestedScale is double s && s > 0 ? (float)Math.Min(s, 4) : Math.Min(2f, 1600f / Math.Max(job.W, job.H));
@@ -567,6 +594,7 @@ public sealed partial class MapTools
                 if (layer != null) g.DrawImage(layer, 0, 0, ow, oh);
             g.PixelOffsetMode = PixelOffsetMode.Default;
             g.SmoothingMode = SmoothingMode.None;
+            overlay?.Invoke(g, scale);
             using var font = new Font("Segoe UI", Math.Clamp(7f * scale, 7f, 11f));
             foreach (var (box, label, kind) in boxes)
             {
@@ -838,35 +866,10 @@ public sealed partial class MapTools
         {
             var map = MapOrThrow();
             var r = FindRoom(Req(a, "room"));
-            string name = Req(a, "name");
-            bool trigger = B(a, "trigger");
-            var def = trigger ? PluginCatalog.Trigger(name) : PluginCatalog.Entity(name);
-            if (def == null && !a.ContainsKey("trigger") && PluginCatalog.Trigger(name) is { } td) { def = td; trigger = true; }
-            string? pn = S(a, "placement");
-            var placement = def?.Placements.FirstOrDefault(p => pn != null && string.Equals(p.Name, pn, StringComparison.OrdinalIgnoreCase))
-                            ?? def?.Placements.FirstOrDefault();
-
-            var src = placement?.Create() ?? new BinElement(name);
-            if (trigger && placement == null) { src.Set("width", 16); src.Set("height", 16); }
-            var el = new BinElement(name);
-            el.Set("id", MapModel.NextId(map));
-            MapCanvas.SetNum(el, "x", (float)(D(a, "x") ?? 0));
-            MapCanvas.SetNum(el, "y", (float)(D(a, "y") ?? 0));
-            foreach (var at in src.Attrs) if (el.Find(at.Key) == null) el.Attrs.Add(at.Clone());
-            ApplyAttrs(el, a, "id", "x", "y");
-
-            var nodes = Nodes(a);
-            for (int i = nodes.Count; i < (def?.MinNodes ?? 0); i++) nodes.Add((el.Num("x") + 16 * (i + 1), el.Num("y")));
-            foreach (var (nx, ny) in nodes)
-            {
-                var n = new BinElement("node");
-                MapCanvas.SetNum(n, "x", nx);
-                MapCanvas.SetNum(n, "y", ny);
-                el.Children.Add(n);
-            }
+            var el = CreateEntity(map, a, MapModel.NextId(map), out bool trigger, out bool known);
             (trigger ? r.TriggersEl : r.EntitiesEl).Children.Add(el);
-            string note = def == null ? " (type not found in installed Lönn plugins; placed without defaults)" : "";
-            return (r.El, $"Added {(trigger ? "trigger" : "entity")} {name} #{el.Int("id")} at ({el.Num("x")},{el.Num("y")}) in {r.Name}{note}.");
+            string note = known ? "" : " (type not found in installed Lönn plugins; placed without defaults)";
+            return (r.El, $"Added {(trigger ? "trigger" : "entity")} {el.Name} #{el.Int("id")} at ({el.Num("x")},{el.Num("y")}) in {r.Name}{note}.");
         });
     }
 

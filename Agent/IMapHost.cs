@@ -67,6 +67,17 @@ public sealed class HeadlessHost : IMapHost
         Dirty = false;
     }
 
+    /// <summary>Uses an in-memory map (tests, scripted use); vanilla tilesets.</summary>
+    public void Load(MapBin map, string? path = null)
+    {
+        Map = map;
+        Path = path;
+        Dirty = false;
+        _undo.Clear();
+        FgTiler = Autotiler.For(MapModel.TilesetXml(map, true), true, null);
+        BgTiler = Autotiler.For(MapModel.TilesetXml(map, false), false, null);
+    }
+
     public void BeginEdit()
     {
         if (Map == null) return;

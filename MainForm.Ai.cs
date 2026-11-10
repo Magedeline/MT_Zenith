@@ -62,6 +62,7 @@ public sealed partial class MainForm
         _agentPanel.Log += s => { if (!IsDisposed) BeginInvoke(() => Log(s)); };
         _agentPanel.WorkingDirectory = () => GameLink.FindModDir() ?? (_path != null ? MapModel.ModDirOf(_path) : null) ?? Environment.CurrentDirectory;
         _agentPanel.Context = AgentContext;
+        _agentPanel.IsMapTool = title => _mapTools!.All.Any(t => title.Contains(t.Name, StringComparison.OrdinalIgnoreCase));
         _agentPanel.McpServers = http =>
         {
             if (!StartMcp(quiet: true)) return new JsonArray();
@@ -88,7 +89,13 @@ public sealed partial class MainForm
             if (s.El != null) parts.Add($"Selected {s.Kind.ToLowerInvariant()}: {(s.Decal ? s.El.Str("texture") : s.El.Name)} id {s.El.Int("id")} at ({s.El.Num("x")},{s.El.Num("y")}).");
             if (_canvas.SelectedItems.Count > 1) parts.Add($"{_canvas.SelectedItems.Count} items are selected.");
         }
+        if (_map != null)
+        {
+            int rooms = MapModel.Levels(_map).Children.Count;
+            parts.Add($"{rooms} room(s). Build with build_room/batch/connect_rooms, verify with analyze_room and analyze_map, keep design_notes.");
+        }
         if (_settings.AiReadOnly) parts.Add("The map is read-only for AI: do not try to edit it.");
+        try { if (_mapTools?.NotesSummary() is { } notes) parts.Add(notes); } catch (Exception) { /* notes are optional */ }
         return string.Join(" ", parts);
     }
 
