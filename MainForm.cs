@@ -129,6 +129,8 @@ public sealed partial class MainForm : Form
         view.DropDownItems.Add(new ToolStripMenuItem("Zoom &out", null, (_, _) => _canvas.SetZoom(_canvas.Zoom * 0.8f), Keys.Control | Keys.OemMinus));
         view.DropDownItems.Add(new ToolStripMenuItem("Zoom &100%", null, (_, _) => _canvas.SetZoom(1f), Keys.Control | Keys.D1));
         view.DropDownItems.Add(new ToolStripMenuItem("Re&load tilesets && sprites", null, (_, _) => ReloadAssets()));
+        view.DropDownItems.Add(new ToolStripSeparator());
+        view.DropDownItems.Add(BuildThemeMenu());
 
         var game = new ToolStripMenuItem("&Game");
         _follow = Toggle("&Follow game (open its map, show room and player)", true, _ => { });
@@ -149,6 +151,37 @@ public sealed partial class MainForm : Form
         menu.Items.AddRange(new ToolStripItem[] { file, edit, roomMenu, view, game, pcg, BuildAiMenu() });
         MainMenuStrip = menu;
         Controls.Add(menu);
+    }
+
+    private ToolStripMenuItem BuildThemeMenu()
+    {
+        var menu = new ToolStripMenuItem("T&heme");
+        var items = new List<(string Id, ToolStripMenuItem Item)>();
+        void Add(string id, string text)
+        {
+            var item = new ToolStripMenuItem(text, null, (_, _) =>
+            {
+                Themes.Select(id);
+                _settings.Theme = Themes.Selected;
+                _settings.Save();
+                foreach (var (i, it) in items) it.Checked = i == Themes.Selected;
+            }) { Checked = id == Themes.Selected };
+            items.Add((id, item));
+            menu.DropDownItems.Add(item);
+        }
+        Add(Themes.SystemId, "&System (follow Windows light/dark)");
+        string? group = null;
+        foreach (var t in Themes.All)
+        {
+            if (t.Group != group)
+            {
+                menu.DropDownItems.Add(new ToolStripSeparator());
+                menu.DropDownItems.Add(new ToolStripLabel(t.Group) { Font = new Font(menu.Font, FontStyle.Bold) });
+                group = t.Group;
+            }
+            Add(t.Id, t.Name + (t.Dark ? "" : "  (light)"));
+        }
+        return menu;
     }
 
     private ToolStripMenuItem Toggle(string text, bool initial, Action<bool> set)

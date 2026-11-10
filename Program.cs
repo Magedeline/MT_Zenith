@@ -1,4 +1,4 @@
-﻿namespace CELMapViewer;
+namespace CELMapViewer;
 
 internal static class Program
 {
@@ -29,6 +29,8 @@ internal static class Program
         if (mcp) return RunMcp(map, readOnly, port);
 
         ApplicationConfiguration.Initialize();
+        Themes.Select(AppSettings.Load().Theme);
+        ThemeApplier.Install();
         Application.Run(new MainForm(map, room));
         return 0;
     }

@@ -116,7 +116,7 @@ public sealed partial class MapCanvas : Control
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
-        BackColor = Color.FromArgb(24, 24, 30);
+        BackColor = Themes.Current.Canvas;
         _workerDone = RequestRepaint;
         AssetWorker.Completed += _workerDone;
     }
@@ -810,8 +810,8 @@ public sealed partial class MapCanvas : Control
         g.TranslateTransform(-_origin.X * Zoom, -_origin.Y * Zoom);
         g.ScaleTransform(Zoom, Zoom);
 
-        using var roomFill = new SolidBrush(Color.FromArgb(44, 44, 54));
-        using var roomPen = new Pen(Color.FromArgb(110, 110, 130), 1 / Zoom);
+        using var roomFill = new SolidBrush(Themes.Current.RoomFill);
+        using var roomPen = new Pen(Themes.Current.RoomBorder, 1 / Zoom);
         using var gamePen = new Pen(Color.FromArgb(255, 200, 60), 3 / Zoom);
         using var nodePen = new Pen(Color.FromArgb(160, 255, 255, 255), 1 / Zoom) { DashStyle = DashStyle.Dot };
         using var selPen = new Pen(Color.White, 2 / Zoom) { DashStyle = DashStyle.Dash };
@@ -842,7 +842,7 @@ public sealed partial class MapCanvas : Control
 
         if (Selected is { El: null } s)
         {
-            using var roomSel = new Pen(Color.FromArgb(120, 200, 255), 3 / Zoom);
+            using var roomSel = new Pen(Themes.Current.RoomSelect, 3 / Zoom);
             g.DrawRectangle(roomSel, s.Room.Bounds);
         }
         else
@@ -1080,13 +1080,13 @@ public sealed partial class MapCanvas : Control
     private void DrawMinimap(Graphics g, RectangleF view)
     {
         var mr = MinimapRect;
-        using var bg = new SolidBrush(Color.FromArgb(200, 14, 14, 18));
+        using var bg = new SolidBrush(Color.FromArgb(200, Themes.Blend(Themes.Current.Canvas, Color.Black, 0.4f)));
         g.FillRectangle(bg, mr);
-        g.DrawRectangle(Pens.DimGray, mr);
+        using (var mb = new Pen(Themes.Current.RoomBorder)) g.DrawRectangle(mb, mr);
         var (scale, off) = MinimapTransform();
-        using var roomB = new SolidBrush(Color.FromArgb(110, 110, 130));
+        using var roomB = new SolidBrush(Themes.Current.RoomBorder);
         using var gameB = new SolidBrush(Color.FromArgb(255, 200, 60));
-        using var selB = new SolidBrush(Color.FromArgb(120, 200, 255));
+        using var selB = new SolidBrush(Themes.Current.RoomSelect);
         foreach (var r in Rooms)
         {
             var b = r.Bounds;

@@ -7,6 +7,8 @@ public sealed class AppSettings
 {
     public List<string> RecentFiles { get; set; } = new();
     public bool ShowMinimap { get; set; } = true;
+    /// <summary>UI theme id (see <see cref="Themes.All"/>) or "system" to follow the Windows light/dark setting.</summary>
+    public string Theme { get; set; } = Themes.SystemId;
     /// <summary>Celeste install folder for standalone (downloaded) builds; null = auto-detect.</summary>
     public string? CelesteDir { get; set; }
 

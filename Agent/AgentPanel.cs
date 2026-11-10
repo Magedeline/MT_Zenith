@@ -14,7 +14,7 @@ public sealed class AgentPanel : UserControl
     private readonly Button _connect = new() { Text = "Connect", Dock = DockStyle.Fill, AutoSize = true };
     private readonly RichTextBox _out = new()
     {
-        Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = SystemColors.Window,
+        Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Themes.Current.Surface,
         Font = new Font("Segoe UI", 9f), DetectUrls = true, HideSelection = false
     };
     private readonly TextBox _input = new()
@@ -69,6 +69,8 @@ public sealed class AgentPanel : UserControl
         _settings = settings;
         _bold = new Font(_out.Font, FontStyle.Bold);
         _italic = new Font(_out.Font, FontStyle.Italic);
+        Themes.Changed += OnThemeChanged;
+        Disposed += (_, _) => Themes.Changed -= OnThemeChanged;
 
         var top = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, RowCount = 4, AutoSize = true, Padding = new Padding(2) };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1012,21 +1014,31 @@ public sealed class AgentPanel : UserControl
 
     // ---- output ----
 
+    /// <summary>Re-colors the chat history written with the previous theme's colors.</summary>
+    private void OnThemeChanged(Theme old, Theme now)
+    {
+        if (IsDisposed || _out.TextLength == 0) return;
+        ThemeApplier.RecolorRtf(_out, new[]
+        {
+            (old.Text, now.Text), (old.Accent, now.Accent), (old.Accent2, now.Accent2), (old.Muted, now.Muted), (old.Warn, now.Warn),
+        });
+    }
+
     private void Append(string text, Kind kind)
     {
         if (IsDisposed) return;
         if (kind != _last)
         {
             if (_out.TextLength > 0 && !_out.Text.EndsWith('\n')) Write("\n", _out.ForeColor, _out.Font);
-            if (kind == Kind.User) Write("You: ", Color.SteelBlue, _bold);
-            else if (kind == Kind.Agent) Write("Agent: ", Color.SeaGreen, _bold);
+            if (kind == Kind.User) Write("You: ", Themes.Current.Accent, _bold);
+            else if (kind == Kind.Agent) Write("Agent: ", Themes.Current.Accent2, _bold);
             _last = kind;
         }
         var (color, font) = kind switch
         {
-            Kind.Thought => (Color.Gray, _italic),
-            Kind.Tool => (Color.DarkOrange, _out.Font),
-            Kind.Info => (Color.DimGray, _italic),
+            Kind.Thought => (Themes.Current.Muted, _italic),
+            Kind.Tool => (Themes.Current.Warn, _out.Font),
+            Kind.Info => (Themes.Current.Muted, _italic),
             _ => (_out.ForeColor, _out.Font)
         };
         Write(text, color, font);

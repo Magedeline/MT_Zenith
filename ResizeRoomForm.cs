@@ -122,6 +122,6 @@ public sealed class ResizeRoomForm : Form
         _preview.Text = ok
             ? $"{nb.Width}x{nb.Height} at ({nb.X},{nb.Y}) [{RoomSizing.TierOf(nb.Width, nb.Height)}]  edges L{EdgeLeft:+0;-0;0} T{EdgeTop:+0;-0;0} R{EdgeRight:+0;-0;0} B{EdgeBottom:+0;-0;0}"
             : "Too small (min 8x8)";
-        _preview.ForeColor = ok ? SystemColors.ControlText : Color.Firebrick;
+        _preview.ForeColor = ok ? Themes.Current.Text : Themes.Current.Error;
     }
 }
