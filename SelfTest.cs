@@ -103,6 +103,34 @@ internal static class SelfTest
             Console.WriteLine("line cells: " + (lineOk ? "ok" : "FAILED"));
             if (!lineOk) failed++;
 
+            if (Directory.EnumerateFiles(maps, "*.bin", SearchOption.AllDirectories).FirstOrDefault() is { } shotFile)
+            {
+                var sm = MapBin.Load(shotFile);
+                string? smod = MapModel.ModDirOf(shotFile);
+                using var canvas = new MapCanvas
+                {
+                    FgTiler = Autotiler.For(MapModel.TilesetXml(sm, true), true, smod),
+                    BgTiler = Autotiler.For(MapModel.TilesetXml(sm, false), false, smod)
+                };
+                canvas.SetRooms(MapModel.Levels(sm).Children.Select(l => new Room(l)).ToList(), keepView: true);
+                var opts = new ScreenshotOptions(1f, true, true, true, true, false);
+                RectangleF mapArea = canvas.MapWorldBounds!.Value;
+                float ms = MapCanvas.ShotFits(mapArea, 1f) ? 1f : 0.25f;
+                sw.Restart();
+                using var mapShot = canvas.RenderScreenshotAsync(mapArea, canvas.Rooms, opts with { Scale = ms }).GetAwaiter().GetResult();
+                var room0 = canvas.Rooms[0];
+                using var roomShot = canvas.RenderScreenshotAsync(room0.Bounds, new[] { room0 }, opts with { Scale = 2f }).GetAwaiter().GetResult();
+                var expect = MapCanvas.ShotSize(mapArea, ms);
+                bool shotOk = mapShot.Size == expect && roomShot.Width == room0.W * 2 && roomShot.Height == room0.H * 2;
+                Console.WriteLine($"screenshot: map {mapShot.Width}x{mapShot.Height} ({canvas.Rooms.Count} rooms), room {room0.Name} {roomShot.Width}x{roomShot.Height} " +
+                                  $"({sw.ElapsedMilliseconds} ms): " + (shotOk ? "ok" : "FAILED"));
+                if (!shotOk) failed++;
+                string outDir = Path.Combine(Path.GetTempPath(), "mtz_shots");
+                Directory.CreateDirectory(outDir);
+                mapShot.Save(Path.Combine(outDir, "map.png"), System.Drawing.Imaging.ImageFormat.Png);
+                roomShot.Save(Path.Combine(outDir, "room.png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
+
             const string lua = """
                 local e = {}
                 e.name = "Test/Thing"

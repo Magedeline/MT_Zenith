@@ -11,6 +11,8 @@ public sealed class AppSettings
     public string Theme { get; set; } = Themes.SystemId;
     /// <summary>Celeste install folder for standalone (downloaded) builds; null = auto-detect.</summary>
     public string? CelesteDir { get; set; }
+    /// <summary>Last folder a screenshot was saved to.</summary>
+    public string? ScreenshotDir { get; set; }
 
     /// <summary>
     /// Room-list group merges per map file name (without extension): name prefix → group it is listed under.

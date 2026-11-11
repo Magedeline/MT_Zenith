@@ -82,9 +82,16 @@ public sealed partial class MainForm : Form
         file.DropDownItems.Add(new ToolStripMenuItem("&Open…", null, (_, _) => OpenDialog(), Keys.Control | Keys.O));
         file.DropDownItems.Add(new ToolStripMenuItem("&Save", null, async (_, _) => await SaveAsync(_path), Keys.Control | Keys.S));
         file.DropDownItems.Add(new ToolStripMenuItem("Save &As…", null, async (_, _) => await SaveAsAsync(), Keys.Control | Keys.Shift | Keys.S));
+        file.DropDownItems.Add(new ToolStripMenuItem("Re&name map file…", null, async (_, _) => await RenameMapAsync()));
         file.DropDownItems.Add(new ToolStripMenuItem("&Revert", null, (_, _) => { if (_path != null && ConfirmDiscard()) Open(_path); }));
         file.DropDownItems.Add(_recentMenu);
         file.DropDownOpening += (_, _) => RefreshRecentMenu();
+        file.DropDownItems.Add(new ToolStripSeparator());
+        var shot = new ToolStripMenuItem("Screens&hot");
+        shot.DropDownItems.Add(new ToolStripMenuItem("&Entire map…", null, async (_, _) => await ScreenshotAsync(ShotKind.Map), Keys.Control | Keys.Shift | Keys.P));
+        shot.DropDownItems.Add(new ToolStripMenuItem("Selected &room…", null, async (_, _) => await ScreenshotAsync(ShotKind.Room), Keys.Control | Keys.Alt | Keys.P));
+        shot.DropDownItems.Add(new ToolStripMenuItem("Current &view…", null, async (_, _) => await ScreenshotAsync(ShotKind.View)));
+        file.DropDownItems.Add(shot);
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(new ToolStripMenuItem("Set &Celeste folder…", null, (_, _) => ChooseCelesteDir()));
         file.DropDownItems.Add(new ToolStripSeparator());
@@ -107,6 +114,7 @@ public sealed partial class MainForm : Form
 
         var roomMenu = new ToolStripMenuItem("&Room");
         roomMenu.DropDownItems.Add(new ToolStripMenuItem("&New room…", null, (_, _) => NewRoom(null), Keys.Control | Keys.N));
+        roomMenu.DropDownItems.Add(new ToolStripMenuItem("&Rename room…", null, (_, _) => RenameRoom(SelectedRoom()), Keys.F2));
         roomMenu.DropDownItems.Add(new ToolStripMenuItem("&Duplicate room", null, (_, _) => DuplicateRoom(SelectedRoom()), Keys.Control | Keys.Shift | Keys.D));
         roomMenu.DropDownItems.Add(new ToolStripMenuItem("De&lete room…", null, (_, _) => DeleteRoom(SelectedRoom()), Keys.Control | Keys.Shift | Keys.Delete));
         roomMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -338,6 +346,19 @@ public sealed partial class MainForm : Form
         {
             if (e.Node?.Tag is Room r && !_suppressListFocus) { _canvas.FocusRoom(r); _canvas.Select(Selection.OfRoom(r)); }
         };
+        _roomTree.NodeMouseClick += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right || e.Node.Tag is not Room r) return;
+            _roomTree.SelectedNode = e.Node;
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Rename room…", null, (_, _) => RenameRoom(r));
+            menu.Items.Add("Teleport here", null, async (_, _) => await TeleportAsync(r, null, false));
+            menu.Items.Add("Duplicate room", null, (_, _) => DuplicateRoom(r));
+            menu.Items.Add("Delete room…", null, (_, _) => DeleteRoom(r));
+            menu.Items.Add("Screenshot room…", null, async (_, _) => await ScreenshotAsync(ShotKind.Room, r));
+            menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+            menu.Show(_roomTree, e.Location);
+        };
         _roomTree.NodeMouseDoubleClick += async (_, e) => { if (e.Node.Tag is Room r) await TeleportAsync(r, null, false); };
 
         _palette.SelectedIndexChanged += (_, _) =>
@@ -551,6 +572,60 @@ public sealed partial class MainForm : Form
         if (_reloadOnSave.Checked && _lastState != null) await ReloadGameAsync();
     }
 
+    /// <summary>Renames the open .bin on disk (and its .bak); the map's package name follows when it matched the file name.</summary>
+    private async Task RenameMapAsync()
+    {
+        if (_map == null) { Log("Open a map first."); return; }
+        if (_path == null) { await SaveAsAsync(); return; }
+        string oldName = Path.GetFileNameWithoutExtension(_path);
+        string? input = Prompt("New map file name (without .bin). The in-game map ID changes with it, so saves and dialog keys using the old name won't match.", oldName);
+        if (input == null) return;
+        string name = input.Trim();
+        if (name.EndsWith(".bin", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+        if (name.Length == 0 || name == oldName) return;
+        if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            MessageBox.Show(this, "That name has characters a file name can't contain.", AppInfo.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        string oldPath = _path, newPath = Path.Combine(Path.GetDirectoryName(oldPath)!, name + ".bin");
+        bool caseOnly = string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase);
+        if (!caseOnly && File.Exists(newPath))
+        {
+            MessageBox.Show(this, $"{Path.GetFileName(newPath)} already exists in that folder.", AppInfo.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        try
+        {
+            if (File.Exists(oldPath))
+            {
+                if (caseOnly) { string tmp = oldPath + ".renaming"; File.Move(oldPath, tmp); File.Move(tmp, newPath); }
+                else File.Move(oldPath, newPath);
+            }
+            if (!caseOnly && File.Exists(oldPath + ".bak") && !File.Exists(newPath + ".bak")) File.Move(oldPath + ".bak", newPath + ".bak");
+        }
+        catch (Exception ex)
+        {
+            Log("Rename failed: " + ex.Message);
+            MessageBox.Show(this, ex.Message, "Rename failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        _path = Path.GetFullPath(newPath);
+        _settings.RecentFiles.RemoveAll(p => string.Equals(p, oldPath, StringComparison.OrdinalIgnoreCase));
+        _settings.AddRecent(_path);
+        RefreshRecentMenu();
+        if (_map.Package == oldName)
+        {
+            _map.Package = name;
+            if (!_dirty)
+            {
+                try { _map.Save(_path); } catch (Exception ex) { Log("Could not update the map's package name: " + ex.Message); MarkDirty(); }
+            }
+        }
+        UpdateTitle();
+        Log($"Renamed map {oldName}.bin to {name}.bin{(_dirty ? " (unsaved changes still pending — Ctrl+S saves to the new name)" : "")}.");
+    }
+
     private bool ConfirmDiscard()
     {
         if (!_dirty) return true;
@@ -742,6 +817,28 @@ public sealed partial class MainForm : Form
         Log($"Duplicated {room.Name} as {copy.Str("name")}.");
     }
 
+    private void RenameRoom(Room? room)
+    {
+        if (_map == null || room == null) { Log("Select a room first."); return; }
+        string? input = Prompt($"New name for room {room.Name}", room.Name);
+        if (input == null) return;
+        string name = input.Trim();
+        if (name.StartsWith("lvl_")) name = name[4..];
+        if (name.Length == 0 || name == room.Name) return;
+        if (_canvas.Rooms.Any(r => r.El != room.El && string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(this, $"A room named '{name}' already exists.", AppInfo.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        string old = room.Name;
+        PushUndo();
+        room.El.Set("name", (room.RawName.StartsWith("lvl_") ? "lvl_" : "") + name);
+        RebuildRooms(keepView: true);
+        if (_canvas.Rooms.FirstOrDefault(r => r.El == room.El) is { } nr) { _canvas.Select(Selection.OfRoom(nr)); SelectRoomInList(nr); }
+        MarkDirty();
+        Log($"Renamed room {old} to {name}. Teleports, checkpoints or triggers that name the old room are not changed.");
+    }
+
     private void ResizeRoomDialog(Room? room)
     {
         if (_map == null || room == null) { Log("Select a room first."); return; }
@@ -780,6 +877,7 @@ public sealed partial class MainForm : Form
             var local = new PointF(world.X - room.X, world.Y - room.Y);
             menu.Items.Add($"Teleport to {room.Name} (nearest spawn)", null, async (_, _) => await TeleportAsync(room, local, false));
             menu.Items.Add($"Teleport to {room.Name} (exactly here)", null, async (_, _) => await TeleportAsync(room, local, true));
+            menu.Items.Add($"Rename room {room.Name}…", null, (_, _) => RenameRoom(room));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Add entity here…", null, (_, _) => AddElement(room, world, false));
             menu.Items.Add("Add trigger here…", null, (_, _) => AddElement(room, world, true));
@@ -805,6 +903,7 @@ public sealed partial class MainForm : Form
         {
             menu.Items.Add($"Duplicate room {room.Name}", null, (_, _) => DuplicateRoom(room));
             menu.Items.Add($"Delete room {room.Name}…", null, (_, _) => DeleteRoom(room));
+            menu.Items.Add($"Screenshot room {room.Name}…", null, async (_, _) => await ScreenshotAsync(ShotKind.Room, room));
         }
         else if (_map != null)
         {
