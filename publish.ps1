@@ -46,6 +46,8 @@ foreach ($f in $flavors) {
 	Get-ChildItem $stage -Filter *.pdb | Remove-Item
 	Copy-Item (Join-Path $here 'README.md') (Join-Path $stage 'README.txt')
 	Copy-Item (Join-Path $here 'MT_Zenith.png') $stage
+	Copy-Item (Join-Path $here 'LICENSE') (Join-Path $stage 'LICENSE.txt')
+	Copy-Item (Join-Path $here 'THIRD-PARTY-NOTICES.txt') $stage
 
 	if ($SelfTest) {
 		$exe = Join-Path $stage 'MT_Zenith.exe'

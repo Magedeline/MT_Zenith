@@ -74,3 +74,7 @@ pwsh ./publish.ps1 -SelfTest        # release zips -> dist/
 Releases are built by `.github/workflows/release.yml` when a `v<version>` tag is pushed (bump `<Version>` in `CELMapViewer.csproj`).
 
 This repository is the standalone copy of `Tools/CELMapViewer` from the CEL mod ([Magedeline/CEL](https://github.com/Magedeline/CEL)). To develop against the mod, clone it into `Celeste/Mods/CEL/Tools/CELMapViewer` or set `CELESTE_DIR`.
+
+## License
+
+MT_Zenith is released under the [MIT License](LICENSE). Bundled third-party software (MoonSharp, the .NET runtime) is listed in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). Celeste's assets and mod assets are not included; they are read from your own install and belong to their creators.
