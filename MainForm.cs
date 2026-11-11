@@ -156,7 +156,14 @@ public sealed partial class MainForm : Form
         pcg.DropDownItems.Add(new ToolStripMenuItem("&Generate rooms (PCGHelper seleCte)…", null, (_, _) => GenerateRooms(), Keys.Control | Keys.G));
         pcg.DropDownItems.Add(new ToolStripMenuItem("&Locate PCGHelper…", null, (_, _) => LocatePcgHelper(force: true)));
 
-        menu.Items.AddRange(new ToolStripItem[] { file, edit, roomMenu, view, game, pcg, BuildAiMenu() });
+        var assets = new ToolStripMenuItem("A&ssets");
+        assets.DropDownItems.Add(new ToolStripMenuItem("Asset &credits for this map…", null, (_, _) => ShowCredits(), Keys.Control | Keys.Shift | Keys.K));
+        assets.DropDownItems.Add(new ToolStripMenuItem("Community Asset &Drive (maddie480.ovh)…", null, (_, _) => ShowAssetDrive()));
+        assets.DropDownItems.Add(new ToolStripSeparator());
+        assets.DropDownItems.Add(new ToolStripMenuItem("Open &maddie480.ovh", null, (_, _) =>
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(MaddieDb.Base + "/celeste") { UseShellExecute = true })));
+
+        menu.Items.AddRange(new ToolStripItem[] { file, edit, roomMenu, view, game, pcg, assets, BuildAiMenu() });
         MainMenuStrip = menu;
         Controls.Add(menu);
     }
@@ -491,10 +498,38 @@ public sealed partial class MainForm : Form
         RefreshTilesets();
     }
 
+    private void ShowCredits()
+    {
+        if (_map == null) { Log("Open a map first."); return; }
+        using var f = new CreditsForm(_map, _path, AssetsAdded, Log);
+        f.ShowDialog(this);
+    }
+
+    private void ShowAssetDrive()
+    {
+        string? mod = _path == null ? null : MapModel.ModDirOf(_path);
+        string name = mod == null ? "MyMod" : AssetCredits.SafeSegment(Path.GetFileName(mod.TrimEnd('\\', '/')));
+        using var f = new AssetDriveForm(mod, name, rel => { AssetsAdded(); Log("Imported " + rel + " (credit recorded)"); },
+                                         _map == null ? null : CreditAdvice.MapKeywords(_map));
+        f.ShowDialog(this);
+    }
+
+    /// <summary>After files were added to a mod: forget cached listings and textures so they show up.</summary>
+    private void AssetsAdded()
+    {
+        GameAssets.Rescan();
+        GameAssets.Gameplay.ClearCache();
+        _decalNames = null;
+        if (_tabs.SelectedTab?.Text == "Decals") EnsureDecals();
+    }
+
     private void ReloadAssets()
     {
+        GameAssets.Rescan();
+        GameAssets.Gameplay.ClearCache();
         Autotiler.ClearCache();
         EntityVisuals.ClearCache();
+        _decalNames = null;
         LoadTilers();
         Log("Reloaded tilesets and sprites.");
     }

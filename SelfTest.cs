@@ -107,6 +107,7 @@ internal static class SelfTest
             {
                 var sm = MapBin.Load(shotFile);
                 string? smod = MapModel.ModDirOf(shotFile);
+                WindowsFormsSynchronizationContext.AutoInstall = false; // no message loop here to resume awaits on
                 using var canvas = new MapCanvas
                 {
                     FgTiler = Autotiler.For(MapModel.TilesetXml(sm, true), true, smod),

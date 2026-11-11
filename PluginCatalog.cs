@@ -87,6 +87,14 @@ public static class PluginCatalog
         t.Start();
     }
 
+    /// <summary>Makes sure installed mods' plugins are loaded (loads them now, or waits for the background load).</summary>
+    public static void EnsureLoaded()
+    {
+        if (Volatile.Read(ref _started) == 0) { LoadNow(); return; }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (Loading && sw.Elapsed < TimeSpan.FromMinutes(2)) Thread.Sleep(50);
+    }
+
     /// <summary>Synchronous load (self-test).</summary>
     public static void LoadNow()
     {

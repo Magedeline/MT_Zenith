@@ -242,6 +242,7 @@ public sealed partial class MapTools
         RegisterPcg();
         RegisterReference();
         RegisterMedia();
+        RegisterCredits();
     }
 
     // ---- args ----

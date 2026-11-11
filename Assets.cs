@@ -155,6 +155,75 @@ public static class GameAssets
         return ZipIndex.TryGetValue(rel, out var z) ? ReadZip(z.Zip, z.Entry) : null;
     }
 
+    /// <summary>
+    /// Where a mod-relative file comes from: the loose mod folder or zip that <see cref="ReadModFile"/> would read it from
+    /// (full path), or null when no mod has it (vanilla or missing).
+    /// </summary>
+    public static string? SourceOf(string rel)
+    {
+        rel = rel.Replace('\\', '/').TrimStart('/');
+        foreach (string mod in LooseMods)
+            if (File.Exists(Path.Combine(mod, rel.Replace('/', Path.DirectorySeparatorChar)))) return mod;
+        return ZipIndex.TryGetValue(rel, out var z) ? z.Zip : null;
+    }
+
+    /// <summary>The loose folder or zip a source name (as in <see cref="EnumerateModFiles"/>) refers to.</summary>
+    public static string? SourceByName(string name)
+    {
+        foreach (string mod in LooseMods)
+            if (Path.GetFileName(mod.TrimEnd('\\', '/')).Equals(name, StringComparison.OrdinalIgnoreCase)) return mod;
+        if (ModsDir != null)
+        {
+            string zip = Path.Combine(ModsDir, name + ".zip");
+            if (File.Exists(zip)) return zip;
+        }
+        return null;
+    }
+
+    private static readonly Dictionary<string, string?> EverestNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The Everest mod name (everest.yaml "- Name:") of a loose mod folder or zip, or null.</summary>
+    public static string? EverestName(string source)
+    {
+        lock (Gate)
+            if (EverestNames.TryGetValue(source, out var cached)) return cached;
+        string? text = null;
+        try
+        {
+            if (Directory.Exists(source))
+            {
+                foreach (string f in new[] { "everest.yaml", "everest.yml" })
+                    if (File.Exists(Path.Combine(source, f))) { text = File.ReadAllText(Path.Combine(source, f)); break; }
+            }
+            else if (File.Exists(source))
+            {
+                using var z = ZipFile.OpenRead(source);
+                var e = z.GetEntry("everest.yaml") ?? z.GetEntry("everest.yml");
+                if (e != null) { using var r = new StreamReader(e.Open()); text = r.ReadToEnd(); }
+            }
+        }
+        catch { /* unreadable: no name */ }
+        string? name = null;
+        if (text != null)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"^(?:-[ \t]*|[ \t]{0,2})Name[ \t]*:[ \t]*(.+?)[ \t]*$", System.Text.RegularExpressions.RegexOptions.Multiline);
+            if (m.Success) name = m.Groups[1].Value.Trim('\'', '"', ' ', '\r', '\t');
+        }
+        lock (Gate) EverestNames[source] = name;
+        return name;
+    }
+
+    /// <summary>Forgets cached mod listings so newly added files are found.</summary>
+    public static void Rescan()
+    {
+        lock (Gate)
+        {
+            _looseMods = null;
+            _zipIndex = null;
+            EverestNames.Clear();
+        }
+    }
+
     private static byte[]? ReadZip(string zip, string entry)
     {
         lock (Gate)
@@ -247,6 +316,9 @@ public sealed class Atlas
             return t;
         }
     }
+
+    /// <summary>Forgets loaded textures (after mod files were added or changed).</summary>
+    public void ClearCache() { lock (_gate) _cache.Clear(); }
 
     /// <summary>First frame of a texture or animation ("path", "path00", "path0", "path000").</summary>
     public Tex? GetFirstFrame(string path) =>
