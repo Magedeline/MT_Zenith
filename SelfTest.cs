@@ -230,6 +230,114 @@ internal static class SelfTest
         return failed;
     }
 
+    /// <summary>Room properties defaults, fillers, project manager, presets, Ahorn plugins and third-party Lönn scripts.</summary>
+    private static int EditorToolsTest()
+    {
+        int failed = 0;
+        void Check(string name, bool ok, string? detail = null)
+        {
+            Console.WriteLine($"{name}: {(ok ? "ok" : "FAILED" + (detail != null ? " " + detail : ""))}");
+            if (!ok) failed++;
+        }
+        string dir = Path.Combine(Path.GetTempPath(), "mtz_tools_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // fillers: the floor becomes one rectangle covering exactly those tiles, and back
+            var map = ProjectManager.NewMap("t/t/t");
+            var room = new Room(MapModel.Levels(map).Children[0]);
+            int solid = 0;
+            for (int y = 0; y < room.Rows; y++) for (int x = 0; x < room.Cols; x++) if (room.Grid(true)[x, y] != '0') solid++;
+            var rects = Fillers.TileRects(room);
+            Check("fg tiles -> filler rects cover every tile", rects.Sum(r => r.Width * r.Height) == solid && rects.Count == 1, $"{rects.Count} rects, {rects.Sum(r => r.Width * r.Height)} vs {solid}");
+            Fillers.RoomToFiller(map, room);
+            Check("room removed, filler added", MapModel.Levels(map).Children.Count == 0 && Fillers.Rects(map).Count == 1 && Fillers.Rects(map)[0] == new Rectangle(0, 160, 320, 24));
+            var back = Fillers.FillersToRooms(map);
+            Check("fillers -> rooms", back.Count == 1 && Fillers.Rects(map).Count == 0 && new Room(back[0]).Grid(true)[39, 2] == '1');
+
+            // project manager
+            string mapPath = ProjectManager.Create(dir, "Test Mod", "me", "camp", "1-a", standard: true);
+            var camps = ProjectManager.Campaigns(Path.Combine(dir, "Test_Mod"));
+            var loaded = MapBin.Load(mapPath);
+            Check("standard project", File.Exists(Path.Combine(dir, "Test_Mod", "everest.yaml")) && File.Exists(Path.Combine(dir, "Test_Mod", "Dialog", "English.txt"))
+                && camps.ContainsKey("me/camp") && MapModel.Levels(loaded).Children.Count == 1 && loaded.Package == "me/camp/1-a", string.Join(",", camps.Keys));
+            string zip = Path.Combine(dir, "TestMod.zip");
+            Check("zip mod", ProjectManager.Zip(Path.Combine(dir, "Test_Mod"), zip) >= 3 && File.Exists(zip));
+
+            // room camera offset survives the bin round trip
+            var lvl = MapModel.Levels(loaded).Children[0];
+            lvl.Set("cameraOffsetX", 1.5f); lvl.Set("cameraOffsetY", -2f);
+            loaded.Save(mapPath);
+            var re = MapModel.Levels(MapBin.Load(mapPath)).Children[0];
+            Check("camera offset saved", re.Num("cameraOffsetX") == 1.5f && re.Num("cameraOffsetY") == -2f);
+
+            // presets keep relative positions
+            var a = new BinElement("spring"); a.Set("x", 100); a.Set("y", 50);
+            var b = new BinElement("refill"); b.Set("x", 116); b.Set("y", 34);
+            var preset = PresetStore.Make("pair", new List<(string, BinElement)> { ("entity", a), ("entity", b) });
+            var items = PresetStore.Items(preset)!;
+            Check("preset group", preset.Kind == "group" && items[0].El.Int("x") == 0 && items[0].El.Int("y") == 16 && items[1].El.Int("x") == 16 && items[1].El.Int("y") == 0);
+
+            // Ahorn plugins
+            var ahorn = PluginCatalog.ParseAhorn("@mapdef Entity \"Foo/Bar\" FooBar(x::Integer, y::Integer, width::Integer=Maple.defaultBlockWidth, fast::Bool=false, speed::Number=1.5, sprite::String=\"a,b\")\n" +
+                "@pardef Baz(x1::Integer, y1::Integer, mode::String=\"on\") = Trigger(\"Foo/Baz\", x1=x1)", "test", false);
+            var bar = ahorn.FirstOrDefault(d => d.Name == "Foo/Bar");
+            Check("Ahorn @mapdef/@pardef", ahorn.Count == 2 && bar != null && bar.Placements[0].Data.Any(kv => kv.Key == "speed" && kv.Value is float f && f == 1.5f)
+                && bar.Placements[0].Data.Any(kv => kv.Key == "sprite" && (string)kv.Value == "a,b") && ahorn.Any(d => d.Name == "Foo/Baz" && d.Trigger),
+                string.Join("; ", ahorn.Select(d => d.Name + ":" + string.Join(",", d.Placements[0].Data.Select(kv => kv.Key + "=" + kv.Value)))));
+
+            // Lönn script host with an inline script
+            var smap = ProjectManager.NewMap("t/t/t");
+            var level = MapModel.Levels(smap).Children[0];
+            var door = new BinElement("door"); door.Set("id", 7); door.Set("x", 64); door.Set("y", 160);
+            level.Child("entities")!.Children.Add(door);
+            var info = new LoennScriptInfo
+            {
+                Name = "t", DisplayName = "t", Mod = "test", Rel = "t.lua",
+                Code = """
+                    local tiles = require("structs.tiles")
+                    local s = { name = "t", parameters = { to = "3", sfx = "x" } }
+                    function s.run(room, args)
+                      for _, e in ipairs(room.entities) do if e._name == "door" then e._name = "FrostHelper/StaticDoor" e.openSfx = args.sfx end end
+                      room.tilesFg = tiles.decode({ innerText = (tiles.matrixToTileString(room.tilesFg.matrix):gsub("1", args.to)) })
+                      table.insert(room.entities, { _name = "refill", x = 8, y = 8, oneUse = true })
+                      room.cameraOffsetX = 2
+                    end
+                    return s
+                    """
+            };
+            var res = LoennScripts.Run(info, smap, level, false, (_, ps) => ps.ToDictionary(p => p.Key, p => (object)(p.Key == "sfx" ? "event:/door" : p.Value)));
+            var ents = level.Child("entities")!.Children;
+            var r2 = new Room(level);
+            Check("Lönn script edits entities, tiles, attrs", res?.RoomsChanged == 1 && ents.Any(e => e.Name == "FrostHelper/StaticDoor" && e.Int("id") == 7 && e.Str("openSfx") == "event:/door")
+                && ents.Any(e => e.Name == "refill" && e.Int("id") > 7) && r2.Grid(true)[0, 22] == '3' && level.Num("cameraOffsetX") == 2,
+                string.Join(",", ents.Select(e => e.Name)) + " tile=" + r2.Grid(true)[0, 22]);
+
+            // installed third-party scripts load (needs the game's Mods folder)
+            var found = LoennScripts.Discover();
+            Console.WriteLine($"Lönn scripts found: {found.Count} ({string.Join(", ", found.Take(8).Select(f => f.ToString()))}{(found.Count > 8 ? ", …" : "")})");
+            if (found.FirstOrDefault(f => f.Name == "doorsToStatic") is { } frost)
+            {
+                var fmap = ProjectManager.NewMap("t/t/t");
+                var fl = MapModel.Levels(fmap).Children[0];
+                var d2 = new BinElement("door"); d2.Set("id", 3); d2.Set("x", 64); d2.Set("y", 160);
+                fl.Child("entities")!.Children.Add(d2);
+                var fr = LoennScripts.Run(frost, fmap, fl, true, (_, ps) => ps.ToDictionary(p => p.Key, p => p.Value));
+                Check("FrostHelper doorsToStatic", fr?.RoomsChanged == 1 && fl.Child("entities")!.Children.Any(e => e.Name == "FrostHelper/StaticDoor"));
+            }
+            if (found.FirstOrDefault(f => f.Name == "removeTiles") is { } rm)
+            {
+                var rmap = ProjectManager.NewMap("t/t/t");
+                var rl = MapModel.Levels(rmap).Children[0];
+                var rr = LoennScripts.Run(rm, rmap, rl, false, (_, ps) => ps.ToDictionary(p => p.Key, p => p.Value));
+                var rroom = new Room(rl);
+                Check("LoennScripts removeAllTiles", rr?.RoomsChanged == 1 && rroom.Grid(true)[0, 22] == '0' && rl.Int("height") == 184 && rl.Child("entities")!.Children[0].Int("y") == 160);
+            }
+        }
+        catch (Exception ex) { failed++; Console.WriteLine("EDITOR TOOLS ERROR: " + ex); }
+        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+        return failed;
+    }
+
     /// <summary>The design tools: movement-model reachability, map connectivity, build_room/draw_tiles/connect_rooms/batch/design_notes through the tool layer.</summary>
     private static int DesignTest()
     {
@@ -339,6 +447,7 @@ internal static class SelfTest
         failed += AssetTest(maps);
         failed += MediaTest();
         failed += DesignTest();
+        failed += EditorToolsTest();
 
         string? root = args.Length > 1 ? args[1] : PcgGenerator.FindLoennRoot(modDir);
         if (root == null) { Console.WriteLine("PCGHelper not found; skipping generation test"); return failed == 0 ? 0 : 1; }

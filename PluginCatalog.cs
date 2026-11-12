@@ -119,6 +119,105 @@ public static class PluginCatalog
                 if (sw.ElapsedMilliseconds > 400) { sw.Restart(); Changed?.Invoke(); }
             }
         }
+        // Ahorn (Julia) plugins: only used for entities/triggers no Lönn plugin defines.
+        foreach (string folder in new[] { "Ahorn/entities", "Ahorn/triggers" })
+            foreach (var (src, rel, read) in GameAssets.EnumerateModFiles(folder, ".jl"))
+            {
+                if (read() is not { } bytes) continue;
+                FileCount++;
+                foreach (var d in ParseAhorn(System.Text.Encoding.UTF8.GetString(bytes), src, folder.EndsWith("triggers")))
+                    (d.Trigger ? TriggerDefs : EntityDefs).TryAdd(d.Name, d);
+            }
+    }
+
+    // ---- Ahorn ----
+
+    private static readonly Regex AhornMapdef = new(@"@mapdef\s+(Entity|Trigger)\s+""([^""]+)""\s+\w+\s*\(", RegexOptions.Compiled);
+    private static readonly Regex AhornPardef = new(@"@pardef\s+\w+\s*\(", RegexOptions.Compiled);
+    private static readonly Regex AhornPardefTail = new(@"^\s*=\s*(Entity|Trigger)\s*\(\s*""([^""]+)""", RegexOptions.Compiled);
+
+    /// <summary>Entity/trigger definitions from an Ahorn plugin's <c>@mapdef</c> and <c>@pardef</c> lines (name and default fields).</summary>
+    public static List<PluginDef> ParseAhorn(string code, string source, bool triggerFolder)
+    {
+        var defs = new List<PluginDef>();
+        foreach (Match m in AhornMapdef.Matches(code))
+        {
+            int end = MatchParen(code, m.Index + m.Length - 1);
+            if (end < 0) continue;
+            defs.Add(AhornDef(m.Groups[2].Value, m.Groups[1].Value == "Trigger", source, code[(m.Index + m.Length)..end]));
+        }
+        foreach (Match m in AhornPardef.Matches(code))
+        {
+            int end = MatchParen(code, m.Index + m.Length - 1);
+            if (end < 0) continue;
+            var tail = AhornPardefTail.Match(code[(end + 1)..Math.Min(code.Length, end + 200)]);
+            if (!tail.Success) continue;
+            defs.Add(AhornDef(tail.Groups[2].Value, tail.Groups[1].Value == "Trigger", source, code[(m.Index + m.Length)..end]));
+        }
+        return defs.GroupBy(d => (d.Name, d.Trigger)).Select(g => g.First()).ToList();
+    }
+
+    private static PluginDef AhornDef(string name, bool trigger, string source, string args)
+    {
+        var d = new PluginDef { Name = name, Trigger = trigger, Source = source + " · Ahorn", MaxNodes = -1 };
+        var p = new PlacementDef { Plugin = d, Name = "" };
+        foreach (string arg in SplitTop(args))
+        {
+            var am = Regex.Match(arg, @"^\s*(\w+)\s*(?:::\s*[\w.{}, ]+)?\s*(?:=\s*(.+?))?\s*$", RegexOptions.Singleline);
+            if (!am.Success) continue;
+            string key = am.Groups[1].Value;
+            if (key is "x" or "y" or "x1" or "y1" or "x2" or "y2" or "nodes") continue;
+            object? value = AhornValue(am.Groups[2].Success ? am.Groups[2].Value.Trim() : null, key);
+            if (value == null) continue;
+            p.Data.Add(new(key, value));
+            d.FieldOrder.Add(key);
+        }
+        if (trigger && !p.Data.Any(x => x.Key == "width")) { p.Data.Insert(0, new("width", 16)); p.Data.Insert(1, new("height", 16)); }
+        d.Placements.Add(p);
+        return d;
+    }
+
+    private static object? AhornValue(string? text, string key)
+    {
+        if (text == null) return key is "width" or "height" ? 16 : null;
+        if (text is "true" or "false") return text == "true";
+        if (text.StartsWith('"') && text.EndsWith('"') && text.Length >= 2) return text[1..^1];
+        if (int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int i)) return i;
+        string f = Regex.Replace(text, @"f0$", "");
+        if (float.TryParse(f, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v)) return v;
+        if (key is "width" or "height") return 16;
+        return null;
+    }
+
+    private static int MatchParen(string s, int open)
+    {
+        int depth = 0;
+        bool str = false;
+        for (int i = open; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '"' && (i == 0 || s[i - 1] != '\\')) str = !str;
+            if (str) continue;
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) return i;
+        }
+        return -1;
+    }
+
+    private static IEnumerable<string> SplitTop(string s)
+    {
+        int depth = 0, start = 0;
+        bool str = false;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '"') str = !str;
+            if (str) continue;
+            if (c is '(' or '[' or '{') depth++;
+            else if (c is ')' or ']' or '}') depth--;
+            else if (c == ',' && depth == 0) { yield return s[start..i]; start = i + 1; }
+        }
+        if (start < s.Length) yield return s[start..];
     }
 
     // ---- Lua ----

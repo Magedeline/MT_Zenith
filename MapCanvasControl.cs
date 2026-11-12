@@ -41,6 +41,8 @@ public sealed partial class MapCanvas : Control
     public Selection? Selected { get; private set; }
     public List<Selection> SelectedItems { get; private set; } = new();
     public string? GameRoom;             // highlighted room the game is in
+    public List<Rectangle> Fillers = new(); // map filler rectangles (world pixels)
+    public bool ShowFillers = true;
     public PointF? PlayerWorld;
     public bool ShowBg = true, ShowEntities = true, ShowTriggers = true, ShowLabels = true, ShowMinimap = true;
     private bool _showFgDecals = true, _showBgDecals = true;
@@ -815,6 +817,18 @@ public sealed partial class MapCanvas : Control
         using var gamePen = new Pen(Color.FromArgb(255, 200, 60), 3 / Zoom);
         using var nodePen = new Pen(Color.FromArgb(160, 255, 255, 255), 1 / Zoom) { DashStyle = DashStyle.Dot };
         using var selPen = new Pen(Color.White, 2 / Zoom) { DashStyle = DashStyle.Dash };
+
+        if (ShowFillers && Fillers.Count > 0)
+        {
+            using var fillBrush = new HatchBrush(HatchStyle.BackwardDiagonal, Color.FromArgb(110, 150, 150, 160), Color.FromArgb(60, 90, 90, 100));
+            using var fillPen = new Pen(Color.FromArgb(170, 170, 170, 180), 1 / Zoom);
+            foreach (var f in Fillers)
+            {
+                if (!view.IntersectsWith(f)) continue;
+                g.FillRectangle(fillBrush, f);
+                g.DrawRectangle(fillPen, f);
+            }
+        }
 
         int level = MipLevel();
         foreach (var room in Rooms)

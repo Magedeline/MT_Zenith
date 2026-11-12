@@ -118,7 +118,11 @@ public sealed partial class MainForm : Form
         roomMenu.DropDownItems.Add(new ToolStripMenuItem("&Duplicate room", null, (_, _) => DuplicateRoom(SelectedRoom()), Keys.Control | Keys.Shift | Keys.D));
         roomMenu.DropDownItems.Add(new ToolStripMenuItem("De&lete room…", null, (_, _) => DeleteRoom(SelectedRoom()), Keys.Control | Keys.Shift | Keys.Delete));
         roomMenu.DropDownItems.Add(new ToolStripSeparator());
-        roomMenu.DropDownItems.Add(new ToolStripMenuItem("Room &properties", null, (_, _) => { if (SelectedRoom() is { } r) _canvas.Select(Selection.OfRoom(r)); }));
+        roomMenu.DropDownItems.Add(new ToolStripMenuItem("Room &properties…", null, (_, _) => EditRoomProperties(SelectedRoom()), Keys.Control | Keys.R));
+        roomMenu.DropDownItems.Add(new ToolStripMenuItem("Show in property &grid", null, (_, _) => { if (SelectedRoom() is { } r) _canvas.Select(Selection.OfRoom(r)); }));
+        roomMenu.DropDownItems.Add(new ToolStripSeparator());
+        roomMenu.DropDownItems.Add(new ToolStripMenuItem("Convert room's FG tiles to &filler", null, (_, _) => ConvertRoomToFiller(SelectedRoom())));
+        roomMenu.DropDownItems.Add(new ToolStripMenuItem("Convert fillers to r&ooms", null, (_, _) => ConvertFillersToRooms()));
         roomMenu.DropDownItems.Add(new ToolStripSeparator());
         roomMenu.DropDownItems.Add(new ToolStripMenuItem("&Stylegrounds && metadata…", null, (_, _) => EditMapMetadata()));
 
@@ -130,6 +134,7 @@ public sealed partial class MainForm : Form
         view.DropDownItems.Add(Toggle("F&G decals", true, v => _canvas.ShowFgDecals = v));
         view.DropDownItems.Add(Toggle("B&G decals", true, v => _canvas.ShowBgDecals = v));
         view.DropDownItems.Add(Toggle("&Labels", true, v => _canvas.ShowLabels = v));
+        view.DropDownItems.Add(Toggle("F&illers", true, v => _canvas.ShowFillers = v));
         view.DropDownItems.Add(Toggle("&Minimap", _settings.ShowMinimap, v => { _canvas.ShowMinimap = v; _settings.ShowMinimap = v; _settings.Save(); }));
         _canvas.ShowMinimap = _settings.ShowMinimap;
         view.DropDownItems.Add(new ToolStripSeparator());
@@ -163,7 +168,7 @@ public sealed partial class MainForm : Form
         assets.DropDownItems.Add(new ToolStripMenuItem("Open &maddie480.ovh", null, (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(MaddieDb.Base + "/celeste") { UseShellExecute = true })));
 
-        menu.Items.AddRange(new ToolStripItem[] { file, edit, roomMenu, view, game, pcg, assets, BuildAiMenu() });
+        menu.Items.AddRange(new ToolStripItem[] { file, edit, roomMenu, view, BuildProjectMenu(), BuildPresetsMenu(), BuildScriptsMenu(), game, pcg, assets, BuildAiMenu() });
         MainMenuStrip = menu;
         Controls.Add(menu);
     }
@@ -358,7 +363,9 @@ public sealed partial class MainForm : Form
             if (e.Button != MouseButtons.Right || e.Node.Tag is not Room r) return;
             _roomTree.SelectedNode = e.Node;
             var menu = new ContextMenuStrip();
+            menu.Items.Add("Room properties…", null, (_, _) => EditRoomProperties(r));
             menu.Items.Add("Rename room…", null, (_, _) => RenameRoom(r));
+            menu.Items.Add("Convert FG tiles to filler", null, (_, _) => ConvertRoomToFiller(r));
             menu.Items.Add("Teleport here", null, async (_, _) => await TeleportAsync(r, null, false));
             menu.Items.Add("Duplicate room", null, (_, _) => DuplicateRoom(r));
             menu.Items.Add("Delete room…", null, (_, _) => DeleteRoom(r));
@@ -702,6 +709,7 @@ public sealed partial class MainForm : Form
     {
         if (_map == null) return;
         var rooms = MapModel.Levels(_map).Children.Select(l => new Room(l)).ToList();
+        _canvas.Fillers = Fillers.Rects(_map);
         _canvas.SetRooms(rooms, keepView);
         RefreshRoomList();
     }
@@ -826,17 +834,22 @@ public sealed partial class MainForm : Form
     {
         if (_map == null) { Log("Open a map first."); return; }
         var r = rect ?? new Rectangle(MapModel.Snap8(_canvas.ViewCenter.X - 160), MapModel.Snap8(_canvas.ViewCenter.Y - 92), 320, 184);
-        string? name = Prompt($"Name for the new {r.Width}x{r.Height} room", MapModel.UniqueName(_map, "room-00"));
-        if (string.IsNullOrWhiteSpace(name)) return;
-        name = name.Trim();
-        if (FindRoom(name) != null) name = MapModel.UniqueName(_map, name);
+        string wanted = MapModel.UniqueName(_map, "room-00");
+        var draft = MapModel.NewLevel(wanted, r.X, r.Y, r.Width, r.Height);
+        using var f = new RoomPropertiesForm(draft, creating: true, name => FindRoom(name) != null);
+        if (f.ShowDialog(this) != DialogResult.OK) return;
+        string name = f.RoomName.StartsWith("lvl_") ? f.RoomName[4..] : f.RoomName;
+        bool lvl = wanted.StartsWith("lvl_");
+        var b = f.Bounds8;
         PushUndo();
-        var level = MapModel.NewLevel(name, r.X, r.Y, r.Width, r.Height);
+        var level = MapModel.NewLevel((lvl ? "lvl_" : "") + name, b.X, b.Y, b.Width, b.Height);
+        f.ApplyTo(level);
+        if (f.WantsCheckpoint) AddCheckpoint(level);
         MapModel.Levels(_map).Children.Add(level);
         RebuildRooms(keepView: true);
         if (_canvas.Rooms.FirstOrDefault(x => x.El == level) is { } room) _canvas.Select(Selection.OfRoom(room));
         MarkDirty();
-        Log($"Added room {name}.");
+        Log($"Added room {name} ({b.Width / 8}x{b.Height / 8} tiles, camera offset {level.Num("cameraOffsetX")}, {level.Num("cameraOffsetY")}).");
     }
 
     private void DuplicateRoom(Room? room)

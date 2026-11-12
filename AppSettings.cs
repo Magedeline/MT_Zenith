@@ -42,6 +42,10 @@ public sealed class AppSettings
     public bool AgentMaxEffort { get; set; }
     /// <summary>PCGHelper folder chosen with PCG ▸ Locate PCGHelper (its Loenn folder or the mod root).</summary>
     public string? PcgHelperDir { get; set; }
+    /// <summary>Project (mod folder) chosen with Project ▸ Open project; null = the open map's mod.</summary>
+    public string? ProjectDir { get; set; }
+    /// <summary>Lönn scripts: run on every room instead of the current one.</summary>
+    public bool ScriptsAllRooms { get; set; }
 
     private static string FilePath => Path.Combine(AppInfo.DataDir, "settings.json");
 

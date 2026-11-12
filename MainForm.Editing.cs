@@ -212,7 +212,13 @@ public sealed partial class MainForm
         try { text = Clipboard.GetText(); } catch { return; }
         var items = ItemClipboard.Deserialize(text);
         if (items == null || items.Count == 0) { _status.Text = "Clipboard has no map items"; return; }
+        PlaceItems(items, at, "Pasted");
+    }
 
+    /// <summary>Adds items (entities, triggers, decals or whole rooms) at a world point (default: the mouse, else the view centre).</summary>
+    private void PlaceItems(List<(string Layer, BinElement El)> items, PointF? at, string verb)
+    {
+        if (_map == null || items.Count == 0) return;
         if (at == null)
         {
             var p = _canvas.PointToClient(Cursor.Position);
@@ -229,12 +235,12 @@ public sealed partial class MainForm
             RebuildRooms(keepView: true);
             if (_canvas.Rooms.FirstOrDefault(r => r.El == added[^1]) is { } nr) _canvas.Select(Selection.OfRoom(nr));
             MarkDirty();
-            Log($"Pasted {added.Count} room(s).");
+            Log($"{verb} {added.Count} room(s).");
             return;
         }
 
         var room = _canvas.RoomAt(w) ?? SelectedRoom();
-        if (room == null) { _status.Text = "Paste into a room: point at one or select it"; return; }
+        if (room == null) { _status.Text = $"{verb}: point at a room or select one first"; return; }
         PushUndo();
         float minX = items.Min(i => i.El.Num("x")), minY = items.Min(i => i.El.Num("y"));
         float dx = MapModel.Snap8(w.X - room.X) - minX, dy = MapModel.Snap8(w.Y - room.Y) - minY;
@@ -257,7 +263,7 @@ public sealed partial class MainForm
         }
         _canvas.SelectMany(pasted);
         AfterItemEdit(pasted);
-        _status.Text = $"Pasted {pasted.Count} item(s) into {room.Name}";
+        _status.Text = $"{verb} {pasted.Count} item(s) into {room.Name}";
     }
 
     // ---- decal browser ----
