@@ -30,8 +30,21 @@ if (-not $Version) {
 if (-not $Version) { throw "No <Version> in $proj" }
 $Version = $Version.TrimStart('v')
 
-if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-New-Item -ItemType Directory $dist | Out-Null
+# Clear only what this script generates; hand-made files (cover art, GameBanana texts) stay.
+New-Item -ItemType Directory $dist -Force | Out-Null
+Get-ChildItem $dist -Filter 'MT_Zenith-*.zip' | Remove-Item -Force
+foreach ($g in 'stage', 'SHA256SUMS.txt', 'release-notes.md', 'gamebanana.txt') {
+	$p = Join-Path $dist $g
+	if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+}
+
+# "What's new" for this version: the "## <Version>" section of CHANGELOG.md.
+$changes = ''
+$changelog = Join-Path $here 'CHANGELOG.md'
+if (Test-Path $changelog) {
+	$m = [regex]::Match((Get-Content $changelog -Raw), "(?ms)^## $([regex]::Escape($Version))\s*\r?\n(.*?)(?=^## |\z)")
+	if ($m.Success) { $changes = $m.Groups[1].Value.Trim() }
+}
 
 $flavors = @(@{ Name = "MT_Zenith-$Version-win-x64"; SelfContained = 'true' })
 if (-not $SkipFxDependent) { $flavors += @{ Name = "MT_Zenith-$Version-win-x64-fxdependent"; SelfContained = 'false' } }
@@ -48,6 +61,7 @@ foreach ($f in $flavors) {
 	Copy-Item (Join-Path $here 'MT_Zenith.png') $stage
 	Copy-Item (Join-Path $here 'LICENSE') (Join-Path $stage 'LICENSE.txt')
 	Copy-Item (Join-Path $here 'THIRD-PARTY-NOTICES.txt') $stage
+	if (Test-Path $changelog) { Copy-Item $changelog (Join-Path $stage 'CHANGELOG.txt') }
 
 	if ($SelfTest) {
 		$exe = Join-Path $stage 'MT_Zenith.exe'
@@ -69,6 +83,7 @@ $notes = @"
 
 Map viewer/editor for Celeste ``.bin`` maps, built for the CEL (Desolo Zantas) mod, with live game link and AI (MCP/ACP) tools.
 
+$(if ($changes) { "### What's new`n`n$changes`n" })
 **Downloads**
 - ``MT_Zenith-$Version-win-x64.zip``: self-contained, just unzip and run ``MT_Zenith.exe``.
 - ``MT_Zenith-$Version-win-x64-fxdependent.zip``: smaller, needs the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0).
